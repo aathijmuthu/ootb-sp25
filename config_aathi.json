@@ -1,0 +1,268 @@
+{
+    "data": {
+        "input_file": "al_2month_export_v1.parquet",
+        "output_directory": "output/"
+    },
+    "kpis": {
+        "visitors": {
+            "description": "Number of unique visitors",
+            "type": "cumulative",
+            "accent": "positive",
+            "calculation": {
+                "method": "unique_count",
+                "filter": null,
+                "column": "event_details_clientId"
+            },
+            "dimensions": {
+                "location": {
+                    "display_name": "Location",
+                    "name": "location",
+                    "source_column": "shop",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "eq('abbott-lyon-global.myshopify.com')",
+                                    "value": "Global"
+                                }
+                            ],
+                            "default": "US"
+                        }
+                    ]
+                },
+                "device": {
+                    "display_name": "Device",
+                    "name": "device",
+                    "source_column": "user_agent",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "str.contains('iPhone|iPad|iOS')",
+                                    "value": "iOS"
+                                },
+                                {
+                                    "condition": "str.contains('Android')",
+                                    "value": "Android"
+                                },
+                                {
+                                    "condition": "str.contains('Windows')",
+                                    "value": "Windows"
+                                },
+                                {
+                                    "condition": "str.contains('Mac OS|Macintosh')",
+                                    "value": "macOS"
+                                },
+                                {
+                                    "condition": "str.contains('Linux Mint')",
+                                    "value": "Linux"
+                                },
+                                {
+                                    "condition": "str.contains('Linux')",
+                                    "value": "Linux"
+                                },
+                                {
+                                    "condition": "str.contains('Tizen|Ubuntu|OpenBSD|FreeBSD|BlackBerry')",
+                                    "value": "Other"
+                                }
+                            ],
+                            "default": "Other"
+                        }
+                    ],
+                    "mapping": "device_mapping"
+                }
+            }
+        },
+        "buyers": {
+            "description": "Number of unique buyers",
+            "type": "cumulative",
+            "accent": "positive",
+            "calculation": {
+                "method": "unique_count",
+                "filter": {
+                    "column": "event_name",
+                    "operator": "==",
+                    "value": "checkout_completed"
+                },
+                "column": "event_details_clientId"
+            },
+            "dimensions": {
+                "location": {
+                    "display_name": "Location",
+                    "name": "location",
+                    "source_column": "shop",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "eq('abbott-lyon-global.myshopify.com')",
+                                    "value": "Global"
+                                }
+                            ],
+                            "default": "US"
+                        }
+                    ]
+                },
+                "device": {
+                    "display_name": "Device",
+                    "name": "device",
+                    "source_column": "user_agent",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "str.contains('iPhone|iPad|iOS')",
+                                    "value": "iOS"
+                                },
+                                {
+                                    "condition": "str.contains('Android')",
+                                    "value": "Android"
+                                },
+                                {
+                                    "condition": "str.contains('Windows')",
+                                    "value": "Windows"
+                                },
+                                {
+                                    "condition": "str.contains('Mac OS|Macintosh')",
+                                    "value": "macOS"
+                                },
+                                {
+                                    "condition": "str.contains('Linux Mint')",
+                                    "value": "Linux"
+                                },
+                                {
+                                    "condition": "str.contains('Linux')",
+                                    "value": "Linux"
+                                },
+                                {
+                                    "condition": "str.contains('Tizen|Ubuntu|OpenBSD|FreeBSD|BlackBerry')",
+                                    "value": "Other"
+                                }
+                            ],
+                            "default": "Other"
+                        }
+                    ],
+                    "mapping": "device_mapping"
+                }
+            }
+        },
+        "orders": {
+            "description": "Number of orders",
+            "type": "cumulative",
+            "accent": "positive",
+            "calculation": {
+                "method": "count",
+                "filter": {
+                    "column": "event_name",
+                    "operator": "==",
+                    "value": "checkout_completed"
+                },
+                "column": "*"
+            },
+            "dimensions": {
+                "location": {
+                    "display_name": "Location",
+                    "name": "location",
+                    "source_column": "shop",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "eq('abbott-lyon-global.myshopify.com')",
+                                    "value": "Global"
+                                }
+                            ],
+                            "default": "US"
+                        }
+                    ]
+                },
+                "device": {
+                    "display_name": "Device",
+                    "name": "device",
+                    "source_column": "user_agent",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "str.contains('iPhone|iPad|iOS')",
+                                    "value": "iOS"
+                                },
+                                {
+                                    "condition": "str.contains('Android')",
+                                    "value": "Android"
+                                },
+                                {
+                                    "condition": "str.contains('Windows')",
+                                    "value": "Windows"
+                                },
+                                {
+                                    "condition": "str.contains('Mac OS|Macintosh')",
+                                    "value": "macOS"
+                                },
+                                {
+                                    "condition": "str.contains('Linux Mint')",
+                                    "value": "Linux"
+                                },
+                                {
+                                    "condition": "str.contains('Linux')",
+                                    "value": "Linux"
+                                },
+                                {
+                                    "condition": "str.contains('Tizen|Ubuntu|OpenBSD|FreeBSD|BlackBerry')",
+                                    "value": "Other"
+                                }
+                            ],
+                            "default": "Other"
+                        }
+                    ],
+                    "mapping": "device_mapping"
+                }
+            }
+        }
+    },
+    "mappings": {
+        "device_mapping": {
+            "iOS": "Mobile",
+            "Android": "Mobile",
+            "Windows": "Desktop",
+            "macOS": "Desktop",
+            "Linux": "Desktop",
+            "Other": "Other"
+        }
+    },
+    "pivot_configs": {
+        "location": {
+            "index": ["time_truncated", "time_hour"],
+            "columns": "location",
+            "values": "count",
+            "aggregate_function": "sum",
+            "rename_columns": {
+                "time_truncated": "time"
+            },
+            "total_columns": ["Global", "US"],
+            "final_column_order": ["time_hour", "time", "Global", "US", "Total"]
+        },
+        "device": {
+            "index": ["time_truncated", "time_hour"],
+            "columns": "device",
+            "values": "count",
+            "aggregate_function": "sum",
+            "rename_columns": {
+                "time_truncated": "time"
+            },
+            "total_columns": [],
+            "final_column_order": ["time_hour", "time", "Total"]
+        }
+    },
+    "common_configs": {
+        "time_truncate_unit": "1h",
+        "unique_subset_column": "event_details_clientId",
+        "event_name_filter": "checkout_completed"
+    }
+}
