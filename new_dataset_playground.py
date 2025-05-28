@@ -126,6 +126,7 @@
 # %%
 !pip install scikit-learn
 
+
 # %%
 import polars as pl
 import pandas as pd
@@ -304,11 +305,7 @@ def configure_user_agent(df: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit("Windows"))
         .when(pl.col("user_agent").str.contains("Mac OS|Macintosh"))
         .then(pl.lit("macOS"))
-        .when(pl.col("user_agent").str.contains("Linux Mint"))
-        .then(pl.lit("Linux"))
-        .when(pl.col("user_agent").str.contains("Linux"))
-        .then(pl.lit("Linux"))
-        .when(pl.col("user_agent").str.contains("Tizen|Ubuntu|OpenBSD|FreeBSD|BlackBerry"))
+        .when(pl.col("user_agent").str.contains("Tizen|Ubuntu|OpenBSD|FreeBSD|BlackBerry|Linux Mint|Linux"))
         .then(pl.lit("Other"))
         .otherwise(pl.lit("Other"))
         .cast(pl.Utf8)
@@ -614,7 +611,13 @@ landing_page_viewers_by_device.write_csv('landing_page_viewers_by_device.csv')
 landing_page_viewers_by_device
 
 # %%
+product_viewers = product_viewers.with_columns(
+    time_truncated=pl.col("event_timestamp").dt.truncate("1h")
+)
 
+product_viewers = product_viewers.with_columns(
+    time_hour=pl.col("time_truncated").dt.hour()
+)
 
 # Group by truncated time and geography, then count events
 agg_df = (product_viewers.group_by("time_truncated", "time_hour", "geography")
@@ -995,65 +998,6 @@ anomaly_df = anomaly_df[['hour', 'event_names']]
 # Display the first few rows of the combined DataFrame
 anomaly_df
 
-# %%
-
-import plotly.express as px
-
-# Create a Plotly figure for total visitors
-fig = px.line(visitors_top_level, x='ds', y='y',
-              title="Total Visitors Over Time with Anomalies",
-              labels={"y": "Number of Visitors", "ds": "Time"})
-
-# Add highlighted regions for hours with anomalies
-for idx, row in anomaly_df.iterrows():
-    if row['event_names']:  # If there are any anomalies in this hour
-        # Get the highest priority event and its percent_diff
-        highest_priority_event = min(row['event_names'], key=get_priority)
-        percent_diff = 0
-        
-        # Get percent_diff directly from the top-level metric
-        if 'visitor' in highest_priority_event.lower():
-            percent_diff = visitors_top_level[visitors_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'landing_page' in highest_priority_event.lower():
-            percent_diff = landing_page_viewers_top_level[landing_page_viewers_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'order' in highest_priority_event.lower():
-            percent_diff = orders_top_level[orders_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'buyer' in highest_priority_event.lower():
-            percent_diff = buyers_top_level[buyers_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'product_viewers' in highest_priority_event.lower():
-            percent_diff = product_viewers_top_level[product_viewers_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'added_to_cart' in highest_priority_event.lower():
-            percent_diff = added_to_cart_top_level[added_to_cart_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'checkout_started' in highest_priority_event.lower():
-            percent_diff = checkout_started_top_level[checkout_started_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        
-        # Set color based on percent_diff sign
-        color = "green" if percent_diff > 0 else "red"
-        
-        fig.add_vrect(x0=row['hour'] - pd.Timedelta(hours=0.5), 
-                     x1=row['hour'] + pd.Timedelta(hours=0.5),
-                     fillcolor=color, 
-                     opacity=0.3, 
-                     line_width=0)
-
-# Update layout for better visualization
-fig.update_layout(
-    xaxis_title="Time",
-    yaxis_title="Number of Visitors",
-    hovermode="x unified",
-    showlegend=False
-)
-
-# Update hover template to show anomaly information
-fig.update_traces(
-    hovertemplate="<b>Time:</b> %{x}<br>" +
-                  "<b>Visitors:</b> %{y}<br>" +
-                  "<b>Anomalies:</b> %{customdata}<extra></extra>",
-    customdata=anomaly_df['event_names']
-)
-
-# Show the figure
-fig.show()
 
 # %%
 # Check lengths of each model's data
@@ -1116,7 +1060,7 @@ checkout_started_geo_contributions = checkout_started_contributions[checkout_sta
 visitors_geo_contributions.head()
 
 # %%
-devices = ["Android",	"Linux", "macOS",	"Other",	"Windows",	"iOS"]
+devices = ["Android", "macOS",	"Other",	"Windows",	"iOS"]
 visitors_contribution_dev = anomaly_contribution(visitors_top_level,visitors_by_device, devices)
 visitors_contributions_device = visitors_contribution_dev[visitors_contribution_dev["is_anomaly"] == 1]
 
@@ -1182,20 +1126,35 @@ def find_eps(df):
   return distances[kneedle.elbow]
 
 def find_maximum_contributors(df, index, eps):
-  reshaped_row = np.array(df.iloc[index].to_list()).reshape(-1, 1)
-  db = DBSCAN(eps=eps*0.5, min_samples=1).fit(reshaped_row)
+  # Get the row values and reshape for clustering
+  row_values = df.iloc[index].to_list()
+  reshaped_row = np.array(row_values).reshape(-1, 1)
+  
+  # Use absolute values for clustering to catch both positive and negative anomalies
+  abs_values = np.abs(reshaped_row)
+  db = DBSCAN(eps=eps*0.5, min_samples=1).fit(abs_values)
   labels = db.labels_
+  
+  # Create clusters using the original values (preserving signs)
   clusters = {}
   for label in set(labels):
     clusters[label] = reshaped_row[labels == label]
-  sorted_clusters = {k: clusters[k] for k in sorted(clusters, key=lambda k: max(clusters[k]), reverse=True)}
+  
+  # Sort clusters by absolute maximum value
+  sorted_clusters = {k: clusters[k] for k in sorted(clusters, key=lambda k: max(np.abs(clusters[k])), reverse=True)}
+  
+  # Get the cluster with the largest absolute values
   max_contributors = sorted_clusters[list(sorted_clusters.keys())[0]]
+  
   if len(sorted_clusters.keys()) == 1:
     return
+  
+  # Find contributing columns, preserving the original values
   contributing_columns = []
   for val in max_contributors:
     col_index = list(reshaped_row).index(val)
     contributing_columns.append(df.columns[col_index])
+  
   return contributing_columns
 
 def create_contributor_col(df):
@@ -1207,6 +1166,12 @@ def create_contributor_col(df):
   df['Contributors'] = contribution_list
   return df
 
+def combine_contributors(row):
+    device_contribs = row['Contributors_x'] if isinstance(row['Contributors_x'], tuple) else ()
+    geo_contribs = row['Contributors_y'] if isinstance(row['Contributors_y'], tuple) else ()
+    combined = list(device_contribs) + list(geo_contribs)
+    return tuple(combined) if combined else None
+
 # %%
 visitor_device_contributing_columns = create_contributor_col(visitors_anomaly_percentages_device)
 visitor_device_contributing_columns.reset_index(inplace=True)
@@ -1217,13 +1182,19 @@ visitor_geography_contributing_columns.reset_index(inplace=True)
 visitor_device_contributing_columns['Contributors'] = visitor_device_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 visitor_geography_contributing_columns['Contributors'] = visitor_geography_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 
-# Now merge the dataframes
+# Now merge the dataframes on ds
 visitor_contributing_columns = pd.merge(
     visitor_device_contributing_columns,
     visitor_geography_contributing_columns,
-    on='Contributors',
-    how='outer'
+    on='ds',
+    how='inner'
 )
+
+# Combine contributors from both dataframes
+
+
+visitor_contributing_columns['Contributors'] = visitor_contributing_columns.apply(combine_contributors, axis=1)
+visitor_contributing_columns = visitor_contributing_columns.drop(['Contributors_x', 'Contributors_y'], axis=1)
 
 visitor_contributing_columns.head()
 
@@ -1238,13 +1209,17 @@ order_geography_contributing_columns.reset_index(inplace=True)
 order_device_contributing_columns['Contributors'] = order_device_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 order_geography_contributing_columns['Contributors'] = order_geography_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 
-# Now merge the dataframes
+# Now merge the dataframes on ds
 order_contributing_columns = pd.merge(
     order_device_contributing_columns,
     order_geography_contributing_columns,
-    on='Contributors',
-    how='outer'
+    on='ds',
+    how='inner'
 )
+
+# Combine contributors from both dataframes
+order_contributing_columns['Contributors'] = order_contributing_columns.apply(combine_contributors, axis=1)
+order_contributing_columns = order_contributing_columns.drop(['Contributors_x', 'Contributors_y'], axis=1)
 
 order_contributing_columns
 
@@ -1261,13 +1236,17 @@ buyer_geography_contributing_columns.head()
 buyer_device_contributing_columns['Contributors'] = buyer_device_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 buyer_geography_contributing_columns['Contributors'] = buyer_geography_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 
-# Now merge the dataframes
+# Now merge the dataframes on ds
 buyer_contributing_columns = pd.merge(
     buyer_device_contributing_columns,
     buyer_geography_contributing_columns,
-    on='Contributors',
-    how='outer'
+    on='ds',
+    how='inner'
 )
+
+# Combine contributors from both dataframes
+buyer_contributing_columns['Contributors'] = buyer_contributing_columns.apply(combine_contributors, axis=1)
+buyer_contributing_columns = buyer_contributing_columns.drop(['Contributors_x', 'Contributors_y'], axis=1)
 
 buyer_contributing_columns
 
@@ -1282,13 +1261,17 @@ product_viewers_geography_contributing_columns.reset_index(inplace=True)
 product_viewers_device_contributing_columns['Contributors'] = product_viewers_device_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 product_viewers_geography_contributing_columns['Contributors'] = product_viewers_geography_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 
-# Now merge the dataframes
+# Now merge the dataframes on ds
 product_viewers_contributing_columns = pd.merge(
     product_viewers_device_contributing_columns,
     product_viewers_geography_contributing_columns,
-    on='Contributors',
-    how='outer'
+    on='ds',
+    how='inner'
 )
+
+# Combine contributors from both dataframes
+product_viewers_contributing_columns['Contributors'] = product_viewers_contributing_columns.apply(combine_contributors, axis=1)
+product_viewers_contributing_columns = product_viewers_contributing_columns.drop(['Contributors_x', 'Contributors_y'], axis=1)
 
 product_viewers_contributing_columns.head()
 
@@ -1303,19 +1286,23 @@ added_to_cart_geography_contributing_columns.reset_index(inplace=True)
 added_to_cart_device_contributing_columns['Contributors'] = added_to_cart_device_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 added_to_cart_geography_contributing_columns['Contributors'] = added_to_cart_geography_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 
-# Now merge the dataframes
+# Now merge the dataframes on ds
 added_to_cart_contributing_columns = pd.merge(
     added_to_cart_device_contributing_columns,
     added_to_cart_geography_contributing_columns,
-    on='Contributors',
-    how='outer'
-)   
+    on='ds',
+    how='inner'
+)
+
+# Combine contributors from both dataframes
+added_to_cart_contributing_columns['Contributors'] = added_to_cart_contributing_columns.apply(combine_contributors, axis=1)
+added_to_cart_contributing_columns = added_to_cart_contributing_columns.drop(['Contributors_x', 'Contributors_y'], axis=1)
 
 added_to_cart_contributing_columns.head()
 
 # %%
 checkout_started_device_contributing_columns = create_contributor_col(checkout_started_anomaly_percentages_device)
-checkout_started_device_contributing_columns.reset_index(inplace=True)  
+checkout_started_device_contributing_columns.reset_index(inplace=True)
 
 checkout_started_geography_contributing_columns = create_contributor_col(checkout_started_anomaly_percentages_geo)
 checkout_started_geography_contributing_columns.reset_index(inplace=True)
@@ -1324,13 +1311,17 @@ checkout_started_geography_contributing_columns.reset_index(inplace=True)
 checkout_started_device_contributing_columns['Contributors'] = checkout_started_device_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 checkout_started_geography_contributing_columns['Contributors'] = checkout_started_geography_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 
-# Now merge the dataframes
+# Now merge the dataframes on ds
 checkout_started_contributing_columns = pd.merge(
     checkout_started_device_contributing_columns,
     checkout_started_geography_contributing_columns,
-    on='Contributors',
-    how='outer'
+    on='ds',
+    how='inner'
 )
+
+# Combine contributors from both dataframes
+checkout_started_contributing_columns['Contributors'] = checkout_started_contributing_columns.apply(combine_contributors, axis=1)
+checkout_started_contributing_columns = checkout_started_contributing_columns.drop(['Contributors_x', 'Contributors_y'], axis=1)
 
 checkout_started_contributing_columns.head()
 
@@ -1350,13 +1341,17 @@ sessions_medium_contributing_columns.head()
 sessions_source_contributing_columns['Contributors'] = sessions_source_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 sessions_medium_contributing_columns['Contributors'] = sessions_medium_contributing_columns['Contributors'].apply(lambda x: tuple(x) if isinstance(x, list) else x)
 
-# Now merge the dataframes
+# Now merge the dataframes on ds
 sessions_contributing_columns = pd.merge(
     sessions_source_contributing_columns,
     sessions_medium_contributing_columns,
-    on='Contributors',
-    how='outer'
+    on='ds',
+    how='inner'
 )
+
+# Combine contributors from both dataframes
+sessions_contributing_columns['Contributors'] = sessions_contributing_columns.apply(combine_contributors, axis=1)
+sessions_contributing_columns = sessions_contributing_columns.drop(['Contributors_x', 'Contributors_y'], axis=1)
 
 sessions_contributing_columns.head()
 
@@ -1417,379 +1412,7 @@ def calculate_metric_summary(filtered_anomalies, metric_name, contributing_colum
     return summary
 
 # %%
-ANOMALY_PRIORITY = {
-    'visitors': 1,
-    'landing_page': 2,
-    'added_to_cart': 3,
-    'checkout_started': 4,
-    'orders': 5,
-    'buyers': 6
-}
 
-# Create the figure
-fig = px.line(visitors_top_level, x='ds', y='y',
-          title="Total Visitors Over Time with Anomalies",
-          labels={"y": "Number of Visitors", "ds": "Time"})
-
-# Add highlighted regions for hours with anomalies
-for idx, row in anomaly_df.iterrows():
-    if row['event_names']:  # If there are any anomalies in this hour
-        # Get the highest priority event and its percent_diff
-        highest_priority_event = min(row['event_names'], key=get_priority)
-        percent_diff = 0
-        
-        # Get percent_diff directly from the top-level metric
-        if 'visitor' in highest_priority_event.lower():
-            percent_diff = visitors_top_level[visitors_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'landing_page' in highest_priority_event.lower():
-            percent_diff = landing_page_viewers_top_level[landing_page_viewers_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'order' in highest_priority_event.lower():
-            percent_diff = orders_top_level[orders_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'buyer' in highest_priority_event.lower():
-            percent_diff = buyers_top_level[buyers_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'product_viewers' in highest_priority_event.lower():
-            percent_diff = product_viewers_top_level[product_viewers_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'added_to_cart' in highest_priority_event.lower():
-            percent_diff = added_to_cart_top_level[added_to_cart_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        elif 'checkout_started' in highest_priority_event.lower():
-            percent_diff = checkout_started_top_level[checkout_started_top_level['ds'] == row['hour']]['percent_diff'].values[0]
-        
-        # Set color based on percent_diff sign
-        color = "green" if percent_diff > 0 else "red"
-        
-        fig.add_vrect(x0=row['hour'] - pd.Timedelta(hours=0.5), 
-                     x1=row['hour'] + pd.Timedelta(hours=0.5),
-                     fillcolor=color, 
-                     opacity=0.3, 
-                     line_width=0)
-
-# Update layout for better visualization
-fig.update_layout(
-    xaxis_title="Time",
-    yaxis_title="Number of Visitors",
-    hovermode="x unified",
-    showlegend=False
-)
-
-
-visitor_summary = calculate_metric_summary(anomaly_df, "visitors", visitor_contributing_columns)
-landing_page_summary = calculate_metric_summary(anomaly_df, "landing_page", sessions_contributing_columns)
-order_summary = calculate_metric_summary(anomaly_df, "orders", order_contributing_columns)
-buyer_summary = calculate_metric_summary(anomaly_df,"buyers", buyer_contributing_columns)
-product_viewers_summary = calculate_metric_summary(anomaly_df, "product_viewers", product_viewers_contributing_columns)
-added_to_cart_summary = calculate_metric_summary(anomaly_df, "added_to_cart", added_to_cart_contributing_columns)
-checkout_started_summary = calculate_metric_summary(anomaly_df, "checkout_started", checkout_started_contributing_columns)
-
-fig.update_layout(
-        xaxis_title="Time",
-        yaxis_title="Number of Visitors",
-        hovermode="x unified",
-        showlegend=False,
-        margin=dict(b=150),  # Add bottom margin for the summary
-        annotations=[
-            dict(
-                text=f"<br>Summary Statistics:<br>{visitor_summary}<br>{landing_page_summary}<br>{order_summary}<br>{buyer_summary}",
-                xref="paper",
-                yref="paper",
-                x=0.5,
-                y=-0.70,  # Position just below the x-axis title
-                showarrow=False,
-                font=dict(size=12),
-                align="center"
-            )
-        ]
-    )
-
-# Create hover text that includes only the highest priority event name and its corresponding metric contributors
-hover_text = []
-for idx, row in anomaly_df.iterrows():
-    # Get the visitor count for this hour from visitors_top_level
-    visitor_count = visitors_top_level[visitors_top_level['ds'] == row['hour']]['y'].values
-    visitor_count = visitor_count[0] if len(visitor_count) > 0 else "N/A"
-
-    hover_info = f"<b>Time:</b> {row['hour']}<br>"
-    hover_info += f"<b>Visitors:</b> {visitor_count}<br>"
-
-    if row['event_names']:
-        # Find the highest priority anomaly
-        def get_priority(event_name):
-            for key, priority in ANOMALY_PRIORITY.items():
-                if key in event_name.lower():
-                    return priority
-            return float('inf')  # Return infinity for unmatched events
-        
-        highest_priority_event = min(row['event_names'], key=get_priority)
-        
-        hover_info += "<b>Anomaly:</b><br>"
-        hover_info += f"- {highest_priority_event}"
-        
-        # Get the contributors for this specific hour
-        current_hour = row['hour']
-        
-        # Determine which metric this event belongs to and add its cleaned contributors
-        if 'visitor' in highest_priority_event.lower():
-            hour_data = visitor_contributing_columns[
-                visitor_contributing_columns['ds_x'] == current_hour
-            ]
-            overall_percent_diff = visitors_top_level[visitors_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
-        elif 'landing_page' in highest_priority_event.lower():
-            hour_data = sessions_contributing_columns[
-                sessions_contributing_columns['ds_x'] == current_hour
-            ]
-            overall_percent_diff = landing_page_viewers_top_level[landing_page_viewers_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
-        elif 'order' in highest_priority_event.lower():
-            hour_data = order_contributing_columns[
-                order_contributing_columns['ds_x'] == current_hour
-            ]
-            overall_percent_diff = orders_top_level[orders_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
-        elif 'buyer' in highest_priority_event.lower():
-            hour_data = buyer_contributing_columns[
-                buyer_contributing_columns['ds_x'] == current_hour
-            ]
-            overall_percent_diff = buyers_top_level[buyers_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
-        elif 'product_viewers' in highest_priority_event.lower():
-            hour_data = product_viewers_contributing_columns[
-                product_viewers_contributing_columns['ds_x'] == current_hour
-            ]
-            overall_percent_diff = product_viewers_top_level[product_viewers_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
-        elif 'added_to_cart' in highest_priority_event.lower():
-            hour_data = added_to_cart_contributing_columns[
-                added_to_cart_contributing_columns['ds_x'] == current_hour
-            ]
-            overall_percent_diff = added_to_cart_top_level[added_to_cart_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
-        elif 'checkout_started' in highest_priority_event.lower():
-            hour_data = checkout_started_contributing_columns[
-                checkout_started_contributing_columns['ds_x'] == current_hour
-            ]
-            overall_percent_diff = checkout_started_top_level[checkout_started_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
-        else:
-            hour_data = pd.DataFrame()  # Empty DataFrame if no matching metric
-            overall_percent_diff = 0
-
-        hover_info += f" (Overall Change: {overall_percent_diff:+.1f}%)"
-
-        if not hour_data.empty:
-            contributors = clean_contributors(hour_data['Contributors'].tolist())
-            if contributors:
-                hover_info += " (Contributors: "
-                contributor_info = []
-                for contrib in contributors:
-                    # Find the percent_diff for this contributor using the correct column name
-                    percent_diff_col = [i for i in hour_data.columns if contrib in i][0]
-                    if percent_diff_col in hour_data.columns:
-                        percent_diff = hour_data[percent_diff_col].values[0] * 100
-                        contributor_info.append(f"{contrib} ({percent_diff:+.1f}%)")
-                hover_info += ", ".join(contributor_info) + ")"
-            else:
-                hover_info += " (Contributors: N/A)"
-
-    hover_text.append(hover_info)
-
-# Update hover template
-fig.update_traces(
-    hovertemplate="%{customdata}<extra></extra>",
-    customdata=hover_text
-)
-
-# Add a legend to explain the colors
-fig.add_annotation(
-    text="<b>Anomaly Types:</b><br>Green: Positive Change<br>Red: Negative Change",
-    xref="paper",
-    yref="paper",
-    x=1.02,
-    y=1,
-    showarrow=False,
-    font=dict(size=12),
-    align="left",
-    bgcolor="white",
-    bordercolor="black",
-    borderwidth=1,
-    borderpad=4
-)
-
-# Show the figure
-fig.show()
-
-# %%
-def plot_visitors_anomalies(anomaly_df, visitors_df, start_date, end_date):
-    """
-    Plot visitors and anomalies for a date range.
-    
-    Parameters:
-    -----------
-    anomaly_df : pandas DataFrame
-        DataFrame containing anomaly information with 'hour' and 'event_names' columns
-    visitors_df : pandas DataFrame
-        DataFrame containing visitor information with 'ds' and 'y' columns
-    start_date : str or datetime
-        The start date (e.g., '2025-02-15')
-    end_date : str or datetime
-        The end date (e.g., '2025-02-16')
-    """
-    import plotly.express as px
-    
-    # Convert dates to datetime if they're strings
-    start_time = pd.to_datetime(start_date).replace(hour=0, minute=0, second=0)
-    end_time = pd.to_datetime(end_date).replace(hour=23, minute=59, second=59)
-    
-    # Filter data for the date range
-    filtered_visitors = visitors_df[
-        (visitors_df['ds'] >= start_time) & 
-        (visitors_df['ds'] <= end_time)
-    ].copy()
-    
-    filtered_anomalies = anomaly_df[
-        (anomaly_df['hour'] >= start_time) & 
-        (anomaly_df['hour'] <= end_time)
-    ].copy()
-    
-    # Create the figure
-    fig = px.line(filtered_visitors, x='ds', y='y',
-              title="Total Visitors Over Time with Anomalies",
-              labels={"y": "Number of Visitors", "ds": "Time"})
-
-    # Add highlighted regions for hours with anomalies
-    for idx, row in filtered_anomalies.iterrows():
-        if row['event_names']:  # If there are any anomalies in this hour
-            # Get the highest priority event and its percent_diff
-            highest_priority_event = min(row['event_names'], key=get_priority)
-            percent_diff = 0
-            
-            # Determine which metric this event belongs to and get its percent_diff
-            if 'visitor' in highest_priority_event.lower():
-                hour_data = visitor_contributing_columns[visitor_contributing_columns['ds_x'] == row['hour']]
-            elif 'landing_page' in highest_priority_event.lower():
-                hour_data = sessions_contributing_columns[sessions_contributing_columns['ds_x'] == row['hour']]
-            elif 'order' in highest_priority_event.lower():
-                hour_data = order_contributing_columns[order_contributing_columns['ds_x'] == row['hour']]
-            elif 'buyer' in highest_priority_event.lower():
-                hour_data = buyer_contributing_columns[buyer_contributing_columns['ds_x'] == row['hour']]
-            elif 'product_viewers' in highest_priority_event.lower():
-                hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds_x'] == row['hour']]
-            elif 'added_to_cart' in highest_priority_event.lower():
-                hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds_x'] == row['hour']]
-            elif 'checkout_started' in highest_priority_event.lower():
-                hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds_x'] == row['hour']]
-            else:
-                hour_data = pd.DataFrame()
-                
-            if not hour_data.empty:
-                contributors = clean_contributors(hour_data['Contributors'].tolist())
-                if contributors:
-                    percent_diff_col = [i for i in hour_data.columns if contributors[0] in i][0]
-                    if percent_diff_col in hour_data.columns:
-                        percent_diff = hour_data[percent_diff_col].values[0]
-            
-            # Set color based on percent_diff sign
-            color = "green" if percent_diff > 0 else "red"
-            
-            fig.add_vrect(x0=row['hour'] - pd.Timedelta(hours=0.5), 
-                         x1=row['hour'] + pd.Timedelta(hours=0.5),
-                         fillcolor=color, 
-                         opacity=0.3, 
-                         line_width=0)
-
-    # Update layout for better visualization
-    fig.update_layout(
-        xaxis_title="Time",
-        yaxis_title="Number of Visitors",
-        hovermode="x unified",
-        showlegend=False
-    )
-
-    # Create hover text that includes event names and their corresponding metric contributors
-    hover_text = []
-    for idx, row in filtered_anomalies.iterrows():
-        # Get the visitor count for this hour from visitors_top_level
-        visitor_count = filtered_visitors[filtered_visitors['ds'] == row['hour']]['y'].values
-        visitor_count = visitor_count[0] if len(visitor_count) > 0 else "N/A"
-    
-        hover_info = f"<b>Time:</b> {row['hour']}<br>"
-        hover_info += f"<b>Visitors:</b> {visitor_count}<br>"
-
-        if row['event_names']:
-            hover_info += "<b>Anomalies:</b><br>"
-            # Check each event name to determine which metric it belongs to
-            for event in row['event_names']:
-                hover_info += f"- {event}"
-                
-                # Get the contributors for this specific hour
-                current_hour = row['hour']
-                
-                # Check which metric this event belongs to and add its cleaned contributors
-                if 'visitor' in event.lower():
-                    # Filter visitor contributors for this hour
-                    hour_data = visitor_contributing_columns[
-                        visitor_contributing_columns['ds_x'] == current_hour
-                    ]
-                    if not hour_data.empty:
-                        contributors = clean_contributors(hour_data['Contributors'].tolist())
-                        if contributors:
-                            hover_info += " (Contributors: "
-                            contributor_info = []
-                            for contrib in contributors:
-                                # Find the percent_diff for this contributor using the correct column name
-                                percent_diff_col = [i for i in hour_data.columns if contrib in i][0]
-                                if percent_diff_col in hour_data.columns:
-                                    percent_diff = hour_data[percent_diff_col].values[0]
-                                    contributor_info.append(f"{contrib} ({percent_diff:.1f}%)")
-                            hover_info += ", ".join(contributor_info) + ")"
-                        else:
-                            hover_info += " (Contributors: N/A)"
-                elif 'order' in event.lower():
-                    # Filter order contributors for this hour
-                    hour_data = order_contributing_columns[
-                        order_contributing_columns['ds_x'] == current_hour
-                    ]
-                    if not hour_data.empty:
-                        contributors = clean_contributors(hour_data['Contributors'].tolist())
-                        if contributors:
-                            hover_info += " (Contributors: "
-                            contributor_info = []
-                            for contrib in contributors:
-                                # Find the percent_diff for this contributor using the correct column name
-                                percent_diff_col = [i for i in hour_data.columns if contrib in i][0]
-                                if percent_diff_col in hour_data.columns:
-                                    percent_diff = hour_data[percent_diff_col].values[0]
-                                    contributor_info.append(f"{contrib} ({percent_diff:.1f}%)")
-                            hover_info += ", ".join(contributor_info) + ")"
-                        else:
-                            hover_info += " (Contributors: N/A)"
-                elif 'buyer' in event.lower():
-                    # Filter buyer contributors for this hour
-                    hour_data = buyer_contributing_columns[
-                        buyer_contributing_columns['ds_x'] == current_hour
-                    ]
-                    if not hour_data.empty:
-                        contributors = clean_contributors(hour_data['Contributors'].tolist())
-                        if contributors:
-                            hover_info += " (Contributors: "
-                            contributor_info = []
-                            for contrib in contributors:
-                                # Find the percent_diff for this contributor using the correct column name
-                                percent_diff_col = [i for i in hour_data.columns if contrib in i][0]
-                                if percent_diff_col in hour_data.columns:
-                                    percent_diff = hour_data[percent_diff_col].values[0]
-                                    contributor_info.append(f"{contrib} ({percent_diff:.1f}%)")
-                            hover_info += ", ".join(contributor_info) + ")"
-                        else:
-                            hover_info += " (Contributors: N/A)"
-            
-                hover_info += "<br>"
-    
-        hover_text.append(hover_info)
-
-    # Update hover template
-    fig.update_traces(
-        hovertemplate="%{customdata}<extra></extra>",
-        customdata=hover_text
-    )
-
-    # Show the figure
-    fig.show()
-
-# Example usage:
-plot_visitors_anomalies(anomaly_df, visitors_top_level, '2025-02-26', '2025-02-27')
 
 # %%
 
@@ -1875,11 +1498,13 @@ for _, row in anomaly_periods.iterrows():
 # Return the merged dataframe for further analysis if needed
 merged
 
-# %%
-visitors_contribution_dev
 
 # %%
-visitors_contributions
+def get_priority(event_name):
+            for key, priority in ANOMALY_PRIORITY.items():
+                if key in event_name.lower():
+                    return priority
+            return float('inf')  # Return infinity for unmatched events
 
 # %%
 import plotly.express as px
@@ -1953,7 +1578,7 @@ sorted_anomalies = anomaly_df.sort_values('hour')
 
 for idx, row in sorted_anomalies.iterrows():
     if not row['event_names']:
-        continue
+            continue
         
     current_time = row['hour']
     
@@ -2005,19 +1630,19 @@ for idx, row in sorted_anomalies.iterrows():
             metric_contributors = {}
             for metric in metrics_with_anomalies:
                 if 'visitor' in metric.lower():
-                    hour_data = visitor_contributing_columns[visitor_contributing_columns['ds_x'] == current_group['start_time']]
+                    hour_data = visitor_contributing_columns[visitor_contributing_columns['ds'] == current_group['start_time']]
                 elif 'landing_page' in metric.lower():
-                    hour_data = sessions_contributing_columns[sessions_contributing_columns['ds_x'] == current_group['start_time']]
+                    hour_data = sessions_contributing_columns[sessions_contributing_columns['ds'] == current_group['start_time']]
                 elif 'order' in metric.lower():
-                    hour_data = order_contributing_columns[order_contributing_columns['ds_x'] == current_group['start_time']]
+                    hour_data = order_contributing_columns[order_contributing_columns['ds'] == current_group['start_time']]
                 elif 'buyer' in metric.lower():
-                    hour_data = buyer_contributing_columns[buyer_contributing_columns['ds_x'] == current_group['start_time']]
+                    hour_data = buyer_contributing_columns[buyer_contributing_columns['ds'] == current_group['start_time']]
                 elif 'product_viewers' in metric.lower():
-                    hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds_x'] == current_group['start_time']]
+                    hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds'] == current_group['start_time']]
                 elif 'added_to_cart' in metric.lower():
-                    hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds_x'] == current_group['start_time']]
+                    hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds'] == current_group['start_time']]
                 elif 'checkout_started' in metric.lower():
-                    hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds_x'] == current_group['start_time']]
+                    hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds'] == current_group['start_time']]
                 else:
                     hour_data = pd.DataFrame()
                 
@@ -2054,19 +1679,19 @@ for idx, row in sorted_anomalies.iterrows():
     
     # Get contributors for this metric
     if 'visitor' in highest_priority_event.lower():
-        hour_data = visitor_contributing_columns[visitor_contributing_columns['ds_x'] == current_time]
+        hour_data = visitor_contributing_columns[visitor_contributing_columns['ds'] == current_time]
     elif 'landing_page' in highest_priority_event.lower():
-        hour_data = sessions_contributing_columns[sessions_contributing_columns['ds_x'] == current_time]
+        hour_data = sessions_contributing_columns[sessions_contributing_columns['ds'] == current_time]
     elif 'order' in highest_priority_event.lower():
-        hour_data = order_contributing_columns[order_contributing_columns['ds_x'] == current_time]
+        hour_data = order_contributing_columns[order_contributing_columns['ds'] == current_time]
     elif 'buyer' in highest_priority_event.lower():
-        hour_data = buyer_contributing_columns[buyer_contributing_columns['ds_x'] == current_time]
+        hour_data = buyer_contributing_columns[buyer_contributing_columns['ds'] == current_time]
     elif 'product_viewers' in highest_priority_event.lower():
-        hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds_x'] == current_time]
+        hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds'] == current_time]
     elif 'added_to_cart' in highest_priority_event.lower():
-        hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds_x'] == current_time]
+        hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds'] == current_time]
     elif 'checkout_started' in highest_priority_event.lower():
-        hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds_x'] == current_time]
+        hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds'] == current_time]
     else:
         hour_data = pd.DataFrame()
     
@@ -2098,19 +1723,19 @@ if current_group['start_time'] is not None:
     metric_contributors = {}
     for metric in metrics_with_anomalies:
         if 'visitor' in metric.lower():
-            hour_data = visitor_contributing_columns[visitor_contributing_columns['ds_x'] == current_group['start_time']]
+            hour_data = visitor_contributing_columns[visitor_contributing_columns['ds'] == current_group['start_time']]
         elif 'landing_page' in metric.lower():
-            hour_data = sessions_contributing_columns[sessions_contributing_columns['ds_x'] == current_group['start_time']]
+            hour_data = sessions_contributing_columns[sessions_contributing_columns['ds'] == current_group['start_time']]
         elif 'order' in metric.lower():
-            hour_data = order_contributing_columns[order_contributing_columns['ds_x'] == current_group['start_time']]
+            hour_data = order_contributing_columns[order_contributing_columns['ds'] == current_group['start_time']]
         elif 'buyer' in metric.lower():
-            hour_data = buyer_contributing_columns[buyer_contributing_columns['ds_x'] == current_group['start_time']]
+            hour_data = buyer_contributing_columns[buyer_contributing_columns['ds'] == current_group['start_time']]
         elif 'product_viewers' in metric.lower():
-            hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds_x'] == current_group['start_time']]
+            hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds'] == current_group['start_time']]
         elif 'added_to_cart' in metric.lower():
-            hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds_x'] == current_group['start_time']]
+            hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds'] == current_group['start_time']]
         elif 'checkout_started' in metric.lower():
-            hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds_x'] == current_group['start_time']]
+            hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds'] == current_group['start_time']]
         else:
             hour_data = pd.DataFrame()
         
@@ -2159,11 +1784,6 @@ for idx, row in anomaly_df.iterrows():
 
     if row['event_names']:
         # Find the highest priority anomaly
-        def get_priority(event_name):
-            for key, priority in ANOMALY_PRIORITY.items():
-                if key in event_name.lower():
-                    return priority
-            return float('inf')  # Return infinity for unmatched events
         
         highest_priority_event = min(row['event_names'], key=get_priority)
         
@@ -2176,37 +1796,37 @@ for idx, row in anomaly_df.iterrows():
         # Determine which metric this event belongs to and add its cleaned contributors
         if 'visitor' in highest_priority_event.lower():
             hour_data = visitor_contributing_columns[
-                visitor_contributing_columns['ds_x'] == current_hour
+                visitor_contributing_columns['ds'] == current_hour
             ]
             overall_percent_diff = visitors_top_level[visitors_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
         elif 'landing_page' in highest_priority_event.lower():
             hour_data = sessions_contributing_columns[
-                sessions_contributing_columns['ds_x'] == current_hour
+                sessions_contributing_columns['ds'] == current_hour
             ]
             overall_percent_diff = landing_page_viewers_top_level[landing_page_viewers_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
         elif 'order' in highest_priority_event.lower():
             hour_data = order_contributing_columns[
-                order_contributing_columns['ds_x'] == current_hour
+                order_contributing_columns['ds'] == current_hour
             ]
             overall_percent_diff = orders_top_level[orders_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
         elif 'buyer' in highest_priority_event.lower():
             hour_data = buyer_contributing_columns[
-                buyer_contributing_columns['ds_x'] == current_hour
+                buyer_contributing_columns['ds'] == current_hour
             ]
             overall_percent_diff = buyers_top_level[buyers_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
         elif 'product_viewers' in highest_priority_event.lower():
             hour_data = product_viewers_contributing_columns[
-                product_viewers_contributing_columns['ds_x'] == current_hour
+                product_viewers_contributing_columns['ds'] == current_hour
             ]
             overall_percent_diff = product_viewers_top_level[product_viewers_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
         elif 'added_to_cart' in highest_priority_event.lower():
             hour_data = added_to_cart_contributing_columns[
-                added_to_cart_contributing_columns['ds_x'] == current_hour
+                added_to_cart_contributing_columns['ds'] == current_hour
             ]
             overall_percent_diff = added_to_cart_top_level[added_to_cart_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
         elif 'checkout_started' in highest_priority_event.lower():
             hour_data = checkout_started_contributing_columns[
-                checkout_started_contributing_columns['ds_x'] == current_hour
+                checkout_started_contributing_columns['ds'] == current_hour
             ]
             overall_percent_diff = checkout_started_top_level[checkout_started_top_level['ds'] == current_hour]['percent_diff'].values[0] * 100
         else:
@@ -2222,10 +1842,13 @@ for idx, row in anomaly_df.iterrows():
                 contributor_info = []
                 for contrib in contributors:
                     # Find the percent_diff for this contributor using the correct column name
-                    percent_diff_col = [i for i in hour_data.columns if contrib in i][0]
-                    if percent_diff_col in hour_data.columns:
-                        percent_diff = hour_data[percent_diff_col].values[0] * 100
-                        contributor_info.append(f"{contrib} ({percent_diff:+.1f}%)")
+                    contrib_clean = contrib.strip()
+                    percent_diff_col = [i for i in hour_data.columns if contrib_clean in i.strip()]
+                    if percent_diff_col and not hour_data.empty:
+                        values = hour_data[percent_diff_col[0]].values
+                        if len(values) > 0:
+                            percent_diff = values[0] * 100
+                            contributor_info.append(f"{contrib} ({percent_diff:+.1f}%)")
                 hover_info += ", ".join(contributor_info) + ")"
             else:
                 hover_info += " (Contributors: N/A)"
@@ -2304,13 +1927,13 @@ def get_percent_diff(metric_name, time):
 # Analyze each anomaly period
 for line in summary_lines:
     if not line.strip():
-        continue
-        
+            continue
+
     # Extract time range and metrics
     parts = line.split(": ", 1)
     if len(parts) != 2:
-        continue
-        
+            continue
+
     time_range = parts[0]
     metrics_info = parts[1]
     
@@ -2380,94 +2003,804 @@ for line in summary_lines:
                 top_level_diff = get_percent_diff(metric_name, start_time)
                 
                 # Get dimension changes based on metric type
-                dimension_diffs = []
+        dimension_diffs = []
                 
-                if 'visitor' in metric_name.lower() or 'order' in metric_name.lower() or 'buyer' in metric_name.lower():
-                    # These metrics have both device and geography dimensions
-                    # Get contributors from the appropriate contributing columns
-                    if 'visitor' in metric_name.lower():
-                        hour_data = visitor_contributing_columns[visitor_contributing_columns['ds_x'] == start_time]
-                    elif 'order' in metric_name.lower():
-                        hour_data = order_contributing_columns[order_contributing_columns['ds_x'] == start_time]
-                    elif 'buyer' in metric_name.lower():
-                        hour_data = buyer_contributing_columns[buyer_contributing_columns['ds_x'] == start_time]
-                    elif 'product_viewers' in metric_name.lower():
-                        hour_data = product_viewers_contributing_columns[product_viewers_contributing_columns['ds_x'] == start_time]
-                    elif 'added_to_cart' in metric_name.lower():
-                        hour_data = added_to_cart_contributing_columns[added_to_cart_contributing_columns['ds_x'] == start_time]
-                    elif 'checkout_started' in metric_name.lower():
-                        hour_data = checkout_started_contributing_columns[checkout_started_contributing_columns['ds_x'] == start_time]
-                    
-                    if not hour_data.empty:
-                        contributors = clean_contributors(hour_data['Contributors'].tolist())
-                        if contributors:
-                            for contrib in contributors:
-                                # Check if contributor is a device
-                                if contrib in [' iOS', ' Android', ' Windows', ' macOS', ' Linux', ' Other']:
-                                    percent_diff_col = [i for i in hour_data.columns if contrib in i]
-                                    if percent_diff_col:
-                                        dimension_diffs.append(('Device', contrib, hour_data[percent_diff_col[0]].values[0]))
-                    
-                    # Check if contributor is a geography
-                    elif contrib in [' US', ' Global']:
-                        percent_diff_col = [i for i in hour_data.columns if contrib in i]
-                        if percent_diff_col:
-                            dimension_diffs.append(('Geography', contrib, hour_data[percent_diff_col[0]].values[0]))
+        if 'visitor' in metric_name.lower() or 'order' in metric_name.lower() or 'buyer' in metric_name.lower():
+            # These metrics have both device and geography dimensions
+            # Get contributors from the appropriate contributing columns
+            if 'visitor' in metric_name.lower():
+                hour_data = visitor_contributing_columns[visitor_contributing_columns['ds'] == start_time]
+            elif 'order' in metric_name.lower():
+                hour_data = order_contributing_columns[order_contributing_columns['ds'] == start_time]
+            elif 'buyer' in metric_name.lower():
+                hour_data = buyer_contributing_columns[buyer_contributing_columns['ds'] == start_time]
             
-                elif 'landing_page' in metric_name.lower():
-                    # Landing page metric has UTM source and UTM medium dimensions
-                    hour_data = sessions_contributing_columns[sessions_contributing_columns['ds_x'] == start_time]
-                    if not hour_data.empty:
-                        contributors = clean_contributors(hour_data['Contributors'].tolist())
-                        if contributors:
-                            for contrib in contributors:
-                                # Check if contributor is a UTM source
-                                if contrib in [' google', ' fbig', ' Klaviyo', ' rakuten', ' tiktok']:
-                                    percent_diff_col = [i for i in hour_data.columns if contrib in i]
-                                    if percent_diff_col:
-                                        dimension_diffs.append(('UTM Source', contrib, hour_data[percent_diff_col[0]].values[0]))
-                    
-                                # Check if contributor is a UTM medium
-                                elif contrib in [' cpc', ' paid_social', ' email', ' affiliates']:
-                                    percent_diff_col = [i for i in hour_data.columns if contrib in i]
-                                    if percent_diff_col:
-                                        dimension_diffs.append(('UTM Medium', contrib, hour_data[percent_diff_col[0]].values[0]))
-            
-                print(f"\nAnalyzing {metric_name} ({count} anomalies):")
-                print(f"Top Level Change: {top_level_diff*100:+.1f}%")
-                
-                if dimension_diffs:
-                    # Group changes by dimension type
-                    dimension_changes = {}
-                    for dim_type, contrib, diff in dimension_diffs:
-                        if dim_type not in dimension_changes:
-                            dimension_changes[dim_type] = []
-                        dimension_changes[dim_type].append((contrib, diff))
-                    
-                    # Print changes by dimension type
-                    for dim_type, changes in dimension_changes.items():
-                        print(f"\n{dim_type} Changes:")
-                        for contrib, diff in changes:
-                            print(f"- {contrib}: {diff*100:+.1f}%")
+            if not hour_data.empty:
+                contributors = clean_contributors(hour_data['Contributors'].tolist())
+                if contributors:
+                    for contrib in contributors:
+                        # Check if contributor is a device
+                        contrib_clean = contrib.strip()
+                        percent_diff_col = [i for i in hour_data.columns if contrib_clean in i.strip()]
+                        if percent_diff_col and not hour_data.empty:
+                            values = hour_data[percent_diff_col[0]].values
+                            if len(values) > 0:
+                                dimension_diffs.append(('Device', contrib, values[0]))
                         
-                        # Determine if there are significant changes in this dimension
-                        significant_changes = [diff for _, diff in changes if abs(diff) > 0.1]
-                        if significant_changes:
-                            print(f"Pattern: Significant changes detected in {dim_type}")
+                        # Check if contributor is a geography
+                        contrib_clean = contrib.strip()
+                        percent_diff_col = [i for i in hour_data.columns if contrib_clean in i.strip()]
+                        if percent_diff_col and not hour_data.empty:
+                            values = hour_data[percent_diff_col[0]].values
+                            if len(values) > 0:
+                                dimension_diffs.append(('Geography', contrib, values[0]))
+        
+        elif 'landing_page' in metric_name.lower():
+            # Landing page metric has UTM source and UTM medium dimensions
+            hour_data = sessions_contributing_columns[sessions_contributing_columns['ds'] == start_time]
+            if not hour_data.empty:
+                contributors = clean_contributors(hour_data['Contributors'].tolist())
+                if contributors:
+                    for contrib in contributors:
+                        # Check if contributor is a UTM source
+                        contrib_clean = contrib.strip()
+                        percent_diff_col = [i for i in hour_data.columns if contrib_clean in i.strip()]
+                        if percent_diff_col and not hour_data.empty:
+                            values = hour_data[percent_diff_col[0]].values
+                            if len(values) > 0:
+                                dimension_diffs.append(('UTM Source', contrib, values[0]))
+                        
+                        # Check if contributor is a UTM medium
+                        contrib_clean = contrib.strip()
+                        percent_diff_col = [i for i in hour_data.columns if contrib_clean in i.strip()]
+                        if percent_diff_col and not hour_data.empty:
+                            values = hour_data[percent_diff_col[0]].values
+                            if len(values) > 0:
+                                dimension_diffs.append(('UTM Medium', contrib, values[0]))
+        
+        print(f"\nAnalyzing {metric_name} ({count} anomalies):")
+        print(f"Top Level Change: {top_level_diff*100:+.1f}%")
+        
+        if dimension_diffs:
+            # Group changes by dimension type
+            dimension_changes = {}
+            for dim_type, contrib, diff in dimension_diffs:
+                if dim_type not in dimension_changes:
+                    dimension_changes[dim_type] = []
+                dimension_changes[dim_type].append((contrib, diff))
+            
+            # Print changes by dimension type
+            for dim_type, changes in dimension_changes.items():
+                print(f"\n{dim_type} Changes:")
+                for contrib, diff in changes:
+                    print(f"- {contrib}: {diff*100:+.1f}%")
+                
+                # Determine if there are significant changes in this dimension
+                significant_changes = [diff for _, diff in changes if abs(diff) > 0.1]
+                if significant_changes:
+                    print(f"Pattern: Significant changes detected in {dim_type}")
+            
+            # Overall dimension hierarchy pattern
+            if abs(top_level_diff) > 0.1 and any(abs(diff) > 0.1 for _, _, diff in dimension_diffs):
+                print("\nPattern: Changes detected at both Top Level and Dimension Levels")
+            elif abs(top_level_diff) > 0.1 and all(abs(diff) <= 0.1 for _, _, diff in dimension_diffs):
+                print("\nPattern: Change detected at Top Level but not at Dimension Levels")
+            elif abs(top_level_diff) <= 0.1 and any(abs(diff) > 0.1 for _, _, diff in dimension_diffs):
+                print("\nPattern: No change at Top Level but changes detected at Dimension Levels")
+
+# %%
+pd.set_option('display.max_columns', None)
+
+
+# %%
+
+def generate_anomaly_report():
+    # Create base dataframe with all hours
+    all_hours = pd.date_range(start='2025-02-24 01:00:00', end='2025-02-28 23:00:00', freq='H')
+    report_df = pd.DataFrame({'hour': all_hours})
+    
+    # Define metrics and their corresponding dataframes
+    metrics = {
+        'landing_page_viewers': {
+            'top_level': landing_page_viewers_top_level,
+            'contributing_columns': sessions_contributing_columns,
+            'geo': None,
+            'device': None,
+            'source': sessions_source_contributions,
+            'medium': sessions_medium_contributions
+        },
+        'visitors': {
+            'top_level': visitors_top_level,
+            'contributing_columns': visitor_contributing_columns,
+            'geo': visitors_contributions,
+            'device': visitors_contribution_dev,
+            'source': None,
+            'medium': None
+        },
+        'product_viewers': {
+            'top_level': product_viewers_top_level,
+            'contributing_columns': product_viewers_contributing_columns,
+            'geo': product_viewers_contributions,
+            'device': product_viewers_contribution_dev,
+            'source': None,
+            'medium': None
+        },
+        'added_to_cart': {
+            'top_level': added_to_cart_top_level,
+            'contributing_columns': added_to_cart_contributing_columns,
+            'geo': added_to_cart_contributions,
+            'device': added_to_cart_contribution_dev,
+            'source': None,
+            'medium': None
+        },
+        'checkout_started': {
+            'top_level': checkout_started_top_level,
+            'contributing_columns': checkout_started_contributing_columns,
+            'geo': checkout_started_contributions,
+            'device': checkout_started_contribution_dev,
+            'source': None,
+            'medium': None
+        },
+        'orders': {
+            'top_level': orders_top_level,
+            'contributing_columns': order_contributing_columns,
+            'geo': orders_contributions,
+            'device': orders_contribution_dev,
+            'source': None,
+            'medium': None
+        },
+        'buyers': {
+            'top_level': buyers_top_level,
+            'contributing_columns': buyer_contributing_columns,
+            'geo': buyers_contributions,
+            'device': buyers_contribution_dev,
+            'source': None,
+            'medium': None
+        }
+    }
+    
+    # For each metric, add columns for anomaly status and percent diff
+    for metric_name, metric_data in metrics.items():
+        try:
+            print(f"Processing metric: {metric_name}")
+            
+            # Initialize anomaly column with zeros
+            report_df[f'{metric_name}_anomaly'] = 0
+            
+            # Add top level anomaly and percent diff
+            for idx, row in report_df.iterrows():
+                hour = row['hour']
+                top_level_data = metric_data['top_level'][metric_data['top_level']['ds'] == hour]
+                
+                if len(top_level_data) > 0:
+                    # Set anomaly status
+                    report_df.at[idx, f'{metric_name}_anomaly'] = 1 if top_level_data['is_anomaly'].any() else 0
                     
-                    # Overall dimension hierarchy pattern
-                    if abs(top_level_diff) > 0.1 and any(abs(diff) > 0.1 for _, _, diff in dimension_diffs):
-                        print("\nPattern: Changes detected at both Top Level and Dimension Levels")
-                    elif abs(top_level_diff) > 0.1 and all(abs(diff) <= 0.1 for _, _, diff in dimension_diffs):
-                        print("\nPattern: Change detected at Top Level but not at Dimension Levels")
-                    elif abs(top_level_diff) <= 0.1 and any(abs(diff) > 0.1 for _, _, diff in dimension_diffs):
-                        print("\nPattern: No change at Top Level but changes detected at Dimension Levels")
+                    # Set percent diff
+                    report_df.at[idx, f'{metric_name}_percent_diff'] = top_level_data['percent_diff'].values[0]
+                else:
+                    report_df.at[idx, f'{metric_name}_percent_diff'] = 0
+            
+            # Add geography dimension if available
+            if metric_data['geo'] is not None:
+                for geo in ['Global', 'US']:
+                    col_name = f'{metric_name}_geo_{geo}_percent_diff'
+                    report_df[col_name] = 0
+                    
+                    for idx, row in report_df.iterrows():
+                        hour = row['hour']
+                        geo_data = metric_data['geo'][metric_data['geo']['ds'] == hour]
+                        
+                        if len(geo_data) > 0:
+                            report_df.at[idx, col_name] = geo_data[f'percent_diff {geo}'].values[0]
+            
+            # Add device dimension if available
+            if metric_data['device'] is not None:
+                for device in ['iOS', 'Android', 'Windows', 'macOS', 'Other']:  # Removed Linux
+                    col_name = f'{metric_name}_device_{device}_percent_diff'
+                    report_df[col_name] = 0
+                    
+                    for idx, row in report_df.iterrows():
+                        hour = row['hour']
+                        device_data = metric_data['device'][metric_data['device']['ds'] == hour]
+                        
+                        if len(device_data) > 0:
+                            report_df.at[idx, col_name] = device_data[f'percent_diff {device}'].values[0]
+            
+            # Add source dimension if available
+            if metric_data['source'] is not None:
+                for source in ['google', 'fbig', 'Klaviyo', 'rakuten', 'tiktok']:
+                    col_name = f'{metric_name}_source_{source}_percent_diff'
+                    report_df[col_name] = 0
+                    
+                    for idx, row in report_df.iterrows():
+                        hour = row['hour']
+                        source_data = metric_data['source'][metric_data['source']['ds'] == hour]
+                        
+                        if len(source_data) > 0:
+                            report_df.at[idx, col_name] = source_data[f'percent_diff {source}'].values[0]
+            
+            # Add medium dimension if available
+            if metric_data['medium'] is not None:
+                for medium in ['cpc', 'paid_social', 'email', 'affiliates']:
+                    col_name = f'{metric_name}_medium_{medium}_percent_diff'
+                    report_df[col_name] = 0
+                    
+                    for idx, row in report_df.iterrows():
+                        hour = row['hour']
+                        medium_data = metric_data['medium'][metric_data['medium']['ds'] == hour]
+                        
+                        if len(medium_data) > 0:
+                            report_df.at[idx, col_name] = medium_data[f'percent_diff {medium}'].values[0]
+            
+            # Add contributors from contributing_columns dataframe only
+            report_df[f'{metric_name}_contributors'] = None
+            
+            for idx, row in report_df.iterrows():
+                hour = row['hour']
+                
+                # Only process contributors if there's an anomaly for this metric at this hour
+                if row[f'{metric_name}_anomaly'] == 1:
+                    if metric_data['contributing_columns'] is not None:
+                        contributing_data = metric_data['contributing_columns'][
+                            metric_data['contributing_columns']['ds'] == hour
+                        ]
+                        if not contributing_data.empty:
+                            contributors = clean_contributors(contributing_data['Contributors'].tolist())
+                            if contributors:
+                                report_df.at[idx, f'{metric_name}_contributors'] = contributors
+            
+            print(f"Successfully processed {metric_name}")
+            
+        except Exception as e:
+            print(f"Error processing metric {metric_name}: {str(e)}")
+            continue
+    
+    # Add overall anomaly status
+    anomaly_columns = [f'{metric}_anomaly' for metric in metrics.keys()]
+    if all(col in report_df.columns for col in anomaly_columns):
+        report_df['has_anomaly'] = report_df[anomaly_columns].max(axis=1)
+    else:
+        print("Warning: Not all anomaly columns were created successfully")
+        print("Available columns:", report_df.columns.tolist())
+        print("Missing columns:", [col for col in anomaly_columns if col not in report_df.columns])
+    
+    # Save to CSV
+    report_df.to_csv('anomaly_report.csv', index=False)
+    return report_df
+
+# Generate the report
+anomaly_report = generate_anomaly_report()
+print(anomaly_report.shape)
+anomaly_report[anomaly_report['has_anomaly'] == 1]
 
 # %%
-prophet_model(visitors, 'Total');
+visitor_contributing_columns
+
+
 
 # %%
 
+def generate_anomaly_group_report(anomaly_report):
+    # Create a copy of the report to work with
+    df = anomaly_report.copy()
+    
+    # Initialize columns for grouping
+    df['group_id'] = np.nan  # Initialize with NaN
+    df['group_sign'] = np.nan  # Initialize with NaN
+    
+    # Get all metrics (excluding special columns)
+    metric_columns = [col for col in df.columns if col.endswith('_percent_diff') and not col.startswith('has_')]
+    metric_names = [col.replace('_percent_diff', '') for col in metric_columns]
+    
+    # Initialize the group counter
+    current_group = 0
+    
+    # Sort by hour to ensure chronological processing
+    df = df.sort_values('hour')
+    
+    # Debug print
+    print(f"Total rows with anomalies: {len(df[df['has_anomaly'] == 1])}")
+    
+    # First pass: identify all anomalies and their signs
+    anomaly_rows = df[df['has_anomaly'] == 1].copy()
+    for idx, row in anomaly_rows.iterrows():
+        # Get the sign of the anomaly (using the first non-zero percent diff)
+        sign = None
+        for metric in metric_columns:
+            if pd.notna(row[metric]) and row[metric] != 0:
+                sign = 1 if row[metric] > 0 else -1
+                break
+        if sign is not None:
+            df.loc[idx, 'group_sign'] = sign
+    
+    # Second pass: group anomalies using a more flexible approach
+    processed_indices = set()
+    
+    # Get all anomaly rows sorted by hour
+    anomaly_indices = df[df['has_anomaly'] == 1].index.tolist()
+    
+    i = 0
+    while i < len(anomaly_indices):
+        if anomaly_indices[i] in processed_indices:
+            i += 1
+            continue
+            
+        current_idx = anomaly_indices[i]
+        current_hour = df.loc[current_idx, 'hour']
+        
+        # Get the sign of the current anomaly
+        current_sign = None
+        for metric in metric_columns:
+            if pd.notna(df.loc[current_idx, metric]) and df.loc[current_idx, metric] != 0:
+                current_sign = 1 if df.loc[current_idx, metric] > 0 else -1
+                break
+        
+        if current_sign is None:
+            i += 1
+            continue
+        
+        # Start a new group
+        current_group += 1
+        df.loc[current_idx, 'group_id'] = current_group
+        df.loc[current_idx, 'group_sign'] = current_sign
+        processed_indices.add(current_idx)
+        
+        # Keep track of the current group's members
+        current_group_members = [current_idx]
+        group_changed = True
+        
+        # Continue adding members to the group until no new members are found
+        while group_changed:
+            group_changed = False
+            
+            # Check all unprocessed anomalies
+            for j in range(len(anomaly_indices)):
+                next_idx = anomaly_indices[j]
+                
+                # Skip if already processed
+                if next_idx in processed_indices:
+                    continue
+                
+                next_hour = df.loc[next_idx, 'hour']
+                
+                # Check if this anomaly is within 3 hours of ANY member of the current group
+                is_within_window = False
+                for member_idx in current_group_members:
+                    member_hour = df.loc[member_idx, 'hour']
+                    time_diff = abs((next_hour - member_hour).total_seconds() / 3600)  # Convert to hours
+                    if time_diff <= 3:
+                        is_within_window = True
+                        break
+                
+                if not is_within_window:
+                    continue
+                
+                # Get the sign of the next anomaly
+                next_sign = None
+                for metric in metric_columns:
+                    if pd.notna(df.loc[next_idx, metric]) and df.loc[next_idx, metric] != 0:
+                        next_sign = 1 if df.loc[next_idx, metric] > 0 else -1
+                        break
+                
+                # Only add to group if signs match
+                if next_sign == current_sign:
+                    df.loc[next_idx, 'group_id'] = current_group
+                    df.loc[next_idx, 'group_sign'] = current_sign
+                    processed_indices.add(next_idx)
+                    current_group_members.append(next_idx)
+                    group_changed = True
+        
+        
+        i += 1
+    
+    # Create the group report DataFrame with the same structure as the original
+    group_df = pd.DataFrame(columns=df.columns)
+    
+    # Process each group
+    for group_id in range(1, current_group + 1):
+        group_data = df[df['group_id'] == group_id]
+        if len(group_data) == 0:
+            continue
+            
+        # Create a new row for this group
+        new_row = {}
+        
+        # Set the start and end hours of the group
+        new_row['start_hour'] = group_data['hour'].min()
+        new_row['end_hour'] = group_data['hour'].max()
+        new_row['hour'] = new_row['start_hour']  # Keep original hour column for compatibility
+        new_row['group_sign'] = group_data['group_sign'].iloc[0]  # Add group sign
+        
+        # Sum up anomaly counts for each metric in this group
+        metric_anomaly_counts = {}
+        for metric_name in metric_names:
+            anomaly_col = f'{metric_name}_anomaly'
+            if anomaly_col in df.columns:
+                count = group_data[anomaly_col].sum()
+                metric_anomaly_counts[metric_name] = count
+                new_row[anomaly_col] = count
+        
+        # Calculate average percent diffs for each metric
+        for metric in metric_columns:
+            values = group_data[metric].dropna()
+            if len(values) > 0:
+                new_row[metric] = values.mean()
+            else:
+                new_row[metric] = 0
+        
+        # Set has_anomaly to 1 since this is a group with anomalies
+        new_row['has_anomaly'] = 1
+        
+        # Handle contributors for each metric
+        for metric_name in metric_names:
+            contributors_col = f'{metric_name}_contributors'
+            if contributors_col in df.columns:
+                # Collect all contributors from the group
+                all_contributors = []
+                for _, row in group_data.iterrows():
+                    contrib_value = row[contributors_col]
+                    if isinstance(contrib_value, (np.ndarray, pd.Series)):
+                        if not pd.isna(contrib_value).all():
+                            all_contributors.extend(contrib_value[~pd.isna(contrib_value)].tolist())
+                    elif isinstance(contrib_value, list):
+                        all_contributors.extend([c for c in contrib_value if not pd.isna(c)])
+                    elif not pd.isna(contrib_value):
+                        all_contributors.append(str(contrib_value))
+                
+                # Remove duplicates and None values
+                all_contributors = [c for c in all_contributors if c is not None]
+                new_row[contributors_col] = list(set(all_contributors))
+        
+        # Root cause analysis
+        # Find the most common anomaly, breaking ties with priority
+        most_common_metrics = []
+        max_count = 0
+        
+        for metric_name, count in metric_anomaly_counts.items():
+            if count > max_count:
+                max_count = count
+                most_common_metrics = [metric_name]
+            elif count == max_count:
+                most_common_metrics.append(metric_name)
+        
+        # If there are ties, use priority to break them
+        if len(most_common_metrics) > 1:
+            most_common_metric = min(most_common_metrics, 
+                                   key=lambda x: ANOMALY_PRIORITY.get(x, float('inf')))
+        else:
+            most_common_metric = most_common_metrics[0]
+        
+        # Check if this is a funnel effect
+        funnel_metrics = ['visitors', 'landing_page', 'added_to_cart', 'checkout_started', 'orders', 'buyers']
+        most_common_metric_idx = funnel_metrics.index(most_common_metric) if most_common_metric in funnel_metrics else -1
+        
+        if most_common_metric_idx > 0:  # If the most common metric is not at the top of the funnel
+            # Check if there are anomalies in metrics higher in the funnel
+            upstream_metrics = funnel_metrics[:most_common_metric_idx]
+            upstream_anomalies = sum(metric_anomaly_counts.get(metric, 0) for metric in upstream_metrics)
+            
+            if upstream_anomalies >= max_count * 0.5:  # If at least 50% of the anomalies are from upstream
+                # Find the most common upstream metric
+                upstream_counts = {metric: metric_anomaly_counts.get(metric, 0) 
+                                 for metric in upstream_metrics}
+                most_common_upstream = max(upstream_counts.items(), key=lambda x: x[1])[0]
+                
+                # Get the contributors for this upstream metric
+                contributors_col = f'{most_common_upstream}_contributors'
+                if contributors_col in new_row and new_row[contributors_col]:
+                    root_cause = f"Funnel effect from {most_common_upstream} ({', '.join(new_row[contributors_col])})"
+                else:
+                    root_cause = f"Funnel effect from {most_common_upstream}"
+            else:
+                # If not enough upstream anomalies, attribute to the most common metric's dimensions
+                contributors_col = f'{most_common_metric}_contributors'
+                if contributors_col in new_row and new_row[contributors_col]:
+                    root_cause = f"Direct anomaly in {most_common_metric} ({', '.join(new_row[contributors_col])})"
+                else:
+                    root_cause = f"Direct anomaly in {most_common_metric}"
+        else:
+            # If the most common metric is at the top of the funnel, attribute to its dimensions
+            contributors_col = f'{most_common_metric}_contributors'
+            if contributors_col in new_row and new_row[contributors_col]:
+                root_cause = f"Direct anomaly in {most_common_metric} ({', '.join(new_row[contributors_col])})"
+            else:
+                root_cause = f"Direct anomaly in {most_common_metric}"
+        
+        new_row['root_cause'] = root_cause
+        
+        # Add the row to the group DataFrame using pd.concat
+        group_df = pd.concat([group_df, pd.DataFrame([new_row])], ignore_index=True)
+    
+    # Sort by start hour
+    group_df = group_df.sort_values('start_hour')
+    
+    # Reorder columns to put start_hour, end_hour, group_sign, and root_cause first
+    cols = group_df.columns.tolist()
+    cols.remove('start_hour')
+    cols.remove('end_hour')
+    cols.remove('hour')  # Remove the original hour column since we have start/end
+    cols.remove('group_sign')
+    cols.remove('root_cause')
+    new_cols = ['start_hour', 'end_hour', 'group_sign', 'root_cause'] + cols
+    group_df = group_df[new_cols]
+    
+    # Debug print
+    for _, row in group_df.iterrows():
+        # Print anomaly counts for each metric
+        for metric_name in metric_names:
+            anomaly_col = f'{metric_name}_anomaly'
+            if anomaly_col in row and row[anomaly_col] > 0:
+                print(f"{metric_name}: {int(row[anomaly_col])} anomalies")
+    
+    # Save to CSV
+    group_df.to_csv('anomaly_group_report.csv', index=False)
+    
+    return group_df
+
+# Generate the group report
+group_report = generate_anomaly_group_report(anomaly_report)
+# Save to CSV
+group_report.to_csv('anomaly_group_report.csv', index=False)
+
+group_report
+
+
+# %%
+def analyze_anomaly_scenarios(group_report, anomaly_report):
+    """
+    Analyze anomaly groups and categorize them into different scenarios.
+    
+    Scenarios:
+    A: Multiple metrics have anomalies in the same direction with at least one contributing dimension that appears consistently across metrics
+    B: Multiple metrics have anomalies in the same direction with different contributing dimensions across metrics (no shared dimensions)
+    C: Multiple metrics have anomalies in the same direction with no contributing dimensions across metrics
+    D: No anomalies or single anomalies (including multiple metrics in the same hour)
+    """
+    
+    def average_contributors(contributors_list):
+        """Average contributor values within each dimension."""
+        if not contributors_list:
+            return []
+            
+        # Clean and process contributors
+        cleaned_contributors = []
+        for contrib in contributors_list:
+            # Remove leading/trailing spaces
+            contrib = contrib.strip()
+            if contrib:
+                cleaned_contributors.append(contrib)
+        
+        return cleaned_contributors
+    
+    def get_consistent_contributors(metric_contributors_by_hour):
+        """Find contributors that appear consistently across hours for each metric."""
+        consistent_contributors = {}
+        
+        for metric, hourly_contribs in metric_contributors_by_hour.items():
+            # Count how many times each contributor appears
+            contributor_counts = {}
+            total_hours = len(hourly_contribs)
+            
+            for hour_contribs in hourly_contribs:
+                for contrib in hour_contribs:
+                    if contrib not in contributor_counts:
+                        contributor_counts[contrib] = 0
+                    contributor_counts[contrib] += 1
+            
+            # Consider a contributor consistent if it appears in at least 50% of hours
+            threshold = total_hours * 0.5
+            consistent_contributors[metric] = {
+                contrib for contrib, count in contributor_counts.items() 
+                if count >= threshold
+            }
+        
+        return consistent_contributors
+    
+    scenarios = {
+        'A': [],
+        'B': [],
+        'C': [],
+        'D': []
+    }
+    
+    # Process each group
+    for idx, row in group_report.iterrows():
+        start_hour = row['start_hour']
+        end_hour = row['end_hour']
+        
+        print(f"\nProcessing group from {start_hour} to {end_hour}")
+        
+        # Get all hours in this group
+        group_hours = anomaly_report[
+            (anomaly_report['hour'] >= start_hour) & 
+            (anomaly_report['hour'] <= end_hour)
+        ]
+        
+        # Track contributors for each metric across all hours
+        metric_contributors_by_hour = {}
+        group_anomalies = []
+        
+        for _, hour_row in group_hours.iterrows():
+            # Get all metrics that had anomalies in this hour
+            hour_metrics = []
+            for col in hour_row.index:
+                if col.endswith('_anomaly') and col != 'has_anomaly' and hour_row[col] > 0:
+                    metric_name = col.replace('_anomaly', '')
+                    hour_metrics.append(metric_name)
+            
+            if hour_metrics:
+                # Get the highest priority metric for this hour
+                highest_priority_metric = min(hour_metrics, key=lambda x: ANOMALY_PRIORITY.get(x, float('inf')))
+                
+                # Get contributors for this metric at this hour
+                contributors = hour_row.get(f'{highest_priority_metric}_contributors', [])
+                print(f"\nHour: {hour_row['hour']}")
+                print(f"Metric: {highest_priority_metric}")
+                print(f"Raw contributors: {contributors}")
+                
+                if contributors:
+                    if isinstance(contributors, list):
+                        averaged_contribs = average_contributors(contributors)
+                    else:
+                        averaged_contribs = [contributors]
+                    
+                    print(f"Averaged contributors: {averaged_contribs}")
+                    
+                    if highest_priority_metric not in metric_contributors_by_hour:
+                        metric_contributors_by_hour[highest_priority_metric] = []
+                    metric_contributors_by_hour[highest_priority_metric].append(averaged_contribs)
+                
+                group_anomalies.append({
+                    'hour': hour_row['hour'],
+                    'metric': highest_priority_metric,
+                    'contributors': contributors
+                })
+        
+        # Skip if no anomalies
+        if not group_anomalies:
+            continue
+        
+        print("\nMetric contributors by hour:")
+        for metric, hourly_contribs in metric_contributors_by_hour.items():
+            print(f"{metric}: {hourly_contribs}")
+        
+        # Check if this is a single-hour anomaly
+        is_single_hour = start_hour == end_hour
+        
+        # Get all unique metrics in this group
+        unique_metrics = set(anomaly['metric'] for anomaly in group_anomalies)
+        
+        # If it's a single hour or single metric, categorize as Scenario D
+        if is_single_hour or len(unique_metrics) == 1:
+            metric = list(unique_metrics)[0]
+            contributors = metric_contributors_by_hour.get(metric, [[]])[0] if metric in metric_contributors_by_hour else []
+            
+            scenarios['D'].append({
+                'start_hour': start_hour,
+                'end_hour': end_hour,
+                'sign': 'Positive' if row['group_sign'] > 0 else 'Negative',
+                'metrics': list(unique_metrics),
+                'contributors': contributors,
+                'is_single_hour': is_single_hour
+            })
+        else:
+            # Get consistent contributors for each metric
+            consistent_contributors = get_consistent_contributors(metric_contributors_by_hour)
+            print("\nConsistent contributors:")
+            for metric, contribs in consistent_contributors.items():
+                print(f"{metric}: {contribs}")
+            
+            # Check if any metrics have no contributors
+            has_contributors = any(contribs for contribs in consistent_contributors.values())
+            
+            if not has_contributors:
+                # Scenario C: No contributing dimensions
+                scenarios['C'].append({
+                    'start_hour': start_hour,
+                    'end_hour': end_hour,
+                    'sign': 'Positive' if row['group_sign'] > 0 else 'Negative',
+                    'metrics': list(unique_metrics)
+                })
+            else:
+                # Check if any contributors are shared across metrics
+                shared_contributors = set()
+                for i, (metric1, contribs1) in enumerate(consistent_contributors.items()):
+                    for metric2, contribs2 in list(consistent_contributors.items())[i+1:]:
+                        shared = contribs1.intersection(contribs2)
+                        if shared:
+                            shared_contributors.update(shared)
+                
+                print(f"\nShared contributors: {shared_contributors}")
+                
+                if shared_contributors:
+                    # Scenario A: At least one contributing dimension shared across metrics
+                    scenarios['A'].append({
+                        'start_hour': start_hour,
+                        'end_hour': end_hour,
+                        'sign': 'Positive' if row['group_sign'] > 0 else 'Negative',
+                        'metrics': list(unique_metrics),
+                        'shared_contributors': list(shared_contributors),
+                        'all_contributors': {metric: list(contribs) for metric, contribs in consistent_contributors.items()}
+                    })
+                else:
+                    # Scenario B: No shared contributing dimensions
+                    scenarios['B'].append({
+                        'start_hour': start_hour,
+                        'end_hour': end_hour,
+                        'sign': 'Positive' if row['group_sign'] > 0 else 'Negative',
+                        'metrics': list(unique_metrics),
+                        'metric_contributors': {metric: list(contribs) for metric, contribs in consistent_contributors.items()}
+                    })
+    
+    # Print the analysis results
+    print("\nAnomaly Scenario Analysis")
+    print("========================")
+    
+    for scenario, cases in scenarios.items():
+        print(f"\nScenario {scenario}: {len(cases)} cases found")
+        print("-" * 50)
+        
+        for case in cases:
+            print(f"\nTime Period: {case['start_hour']} to {case['end_hour']}")
+            print(f"Sign: {case['sign']}")
+            
+            if scenario == 'A':
+                print(f"Metrics: {', '.join(case['metrics'])}")
+                print(f"Shared Contributors: {', '.join(case['shared_contributors'])}")
+                print("All Contributors by Metric:")
+                for metric, contribs in case['all_contributors'].items():
+                    print(f"  - {metric}: {', '.join(contribs)}")
+            
+            elif scenario == 'B':
+                print(f"Metrics: {', '.join(case['metrics'])}")
+                print("Contributors by Metric:")
+                for metric, contribs in case['metric_contributors'].items():
+                    print(f"  - {metric}: {', '.join(contribs)}")
+            
+            elif scenario == 'C':
+                print(f"Metrics: {', '.join(case['metrics'])}")
+                print("No contributing dimensions found")
+            
+            elif scenario == 'D':
+                if case.get('is_single_hour', False):
+                    print(f"Single-hour anomaly with metrics: {', '.join(case['metrics'])}")
+                else:
+                    print(f"Single Metric: {case['metrics'][0]}")
+                if case['contributors']:
+                    print(f"Contributors: {', '.join(case['contributors'])}")
+                else:
+                    print("No contributing dimensions found")
+            
+            print("-" * 30)
+    
+    return scenarios
+
+# Generate the group report and analyze scenarios
+group_report = generate_anomaly_group_report(anomaly_report)
+scenarios = analyze_anomaly_scenarios(group_report, anomaly_report)
+
+# Convert scenarios to JSON-serializable format
+def convert_to_json_serializable(obj):
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    elif isinstance(obj, set):
+        return list(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_json_serializable(item) for item in obj]
+    return obj
+
+# Convert scenarios to JSON-serializable format
+json_scenarios = convert_to_json_serializable(scenarios)
+
+# Save to JSON file
+import json
+with open('anomaly_scenarios.json', 'w') as f:
+    json.dump(json_scenarios, f, indent=2)
+
+print("\nScenarios have been saved to 'anomaly_scenarios.json'")
 
 
 # %%
