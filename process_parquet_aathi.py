@@ -76,58 +76,105 @@ def process_dimension(df: pl.DataFrame, dimension_config: Dict[str, Any], config
 def process_kpi(df: pl.DataFrame, kpi_name: str, kpi_config: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, pl.DataFrame]:
     """Process a specific KPI with all its dimensions"""
     results = {}
-    
-    # Apply KPI-specific filtering
-    if kpi_config["calculation"]["filter"]:
-        filter_config = kpi_config["calculation"]["filter"]
-        filter_expr = pl.col(filter_config["column"])
-        
-        if filter_config["operator"] == "==":
-            filter_expr = filter_expr == filter_config["value"]
-        elif filter_config["operator"] == "!=":
-            filter_expr = filter_expr != filter_config["value"]
-        elif filter_config["operator"] == ">":
-            filter_expr = filter_expr > filter_config["value"]
-        elif filter_config["operator"] == ">=":
-            filter_expr = filter_expr >= filter_config["value"]
-        elif filter_config["operator"] == "<":
-            filter_expr = filter_expr < filter_config["value"]
-        elif filter_config["operator"] == "<=":
-            filter_expr = filter_expr <= filter_config["value"]
-        
-        df = df.filter(filter_expr)
-    
-    # Get base data
-    if kpi_config["calculation"]["method"] == "unique_count":
-        df = df.unique(subset=[kpi_config["calculation"]["column"]])
-    elif kpi_config["calculation"]["method"] == "count":
-        pass  # No need for unique filtering
-    
+
+    # Handle first_occurrence logic if present
+    first_occ = kpi_config["calculation"].get("first_occurrence")
+    if first_occ:
+        # Apply filter if present
+        filter_config = kpi_config["calculation"].get("filter")
+        if filter_config:
+            filter_expr = pl.col(filter_config["column"])
+            if filter_config["operator"] == "==":
+                filter_expr = filter_expr == filter_config["value"]
+            elif filter_config["operator"] == "!=":
+                filter_expr = filter_expr != filter_config["value"]
+            elif filter_config["operator"] == ">":
+                filter_expr = filter_expr > filter_config["value"]
+            elif filter_config["operator"] == ">=":
+                filter_expr = filter_expr >= filter_config["value"]
+            elif filter_config["operator"] == "<":
+                filter_expr = filter_expr < filter_config["value"]
+            elif filter_config["operator"] == "<=":
+                filter_expr = filter_expr <= filter_config["value"]
+            df = df.filter(filter_expr)
+        # Group by session_id and aggregate as specified
+        group_by_col = first_occ["group_by"]
+        aggs = []
+        for agg in first_occ["aggregations"]:
+            col = agg["column"]
+            agg_type = agg["agg"]
+            alias = agg.get("alias", None)
+            if agg_type == "min":
+                aggs.append(pl.col(col).min().alias(alias or col))
+            elif agg_type == "first":
+                aggs.append(pl.col(col).first().alias(alias or col))
+            # Add more aggregation types as needed
+        df = df.group_by(group_by_col).agg(aggs)
+        if first_occ.get("drop_nulls"):
+            df = df.drop_nulls()
+
+    else:
+        # Apply KPI-specific filtering
+        if kpi_config["calculation"].get("filter"):
+            filter_config = kpi_config["calculation"]["filter"]
+            filter_expr = pl.col(filter_config["column"])
+            if filter_config["operator"] == "==":
+                filter_expr = filter_expr == filter_config["value"]
+            elif filter_config["operator"] == "!=":
+                filter_expr = filter_expr != filter_config["value"]
+            elif filter_config["operator"] == ">":
+                filter_expr = filter_expr > filter_config["value"]
+            elif filter_config["operator"] == ">=":
+                filter_expr = filter_expr >= filter_config["value"]
+            elif filter_config["operator"] == "<":
+                filter_expr = filter_expr < filter_config["value"]
+            elif filter_config["operator"] == "<=":
+                filter_expr = filter_expr <= filter_config["value"]
+            df = df.filter(filter_expr)
+
+        # Get base data
+        if kpi_config["calculation"]["method"] == "unique_count":
+            df = df.unique(subset=[kpi_config["calculation"]["column"]])
+        elif kpi_config["calculation"]["method"] == "count":
+            pass  # No need for unique filtering
+
     # Process each dimension
     for dim_name, dim_config in kpi_config["dimensions"].items():
         dim_df = df.clone()
-        
-        # Apply time truncation first
-        dim_df = dim_df.with_columns([
-            pl.col("event_timestamp").dt.truncate(config["common_configs"]["time_truncate_unit"]).alias("time_truncated")
-        ])
-        dim_df = dim_df.with_columns([
-            pl.col("time_truncated").dt.hour().alias("time_hour")
-        ])
-        
+
+        # Determine which timestamp column to use
+        timestamp_col = "event_timestamp"
+        if first_occ:
+            # Try to find the alias for the min timestamp aggregation
+            for agg in first_occ["aggregations"]:
+                if agg["agg"] == "min":
+                    timestamp_col = agg.get("alias", agg["column"])
+                    break
+
+        # Apply time truncation first if the timestamp column exists
+        if timestamp_col in dim_df.columns:
+            dim_df = dim_df.with_columns([
+                pl.col(timestamp_col).dt.truncate(config["common_configs"]["time_truncate_unit"]).alias("time_truncated")
+            ])
+            dim_df = dim_df.with_columns([
+                pl.col("time_truncated").dt.hour().alias("time_hour")
+            ])
+
         # Process dimension
         dim_df = process_dimension(dim_df, dim_config, config)
-        
+
         # Get pivot config
-        pivot_config = config["pivot_configs"][dim_name]
-        
+        pivot_config = config["pivot_configs"].get(dim_name)
+        if not pivot_config:
+            continue  # skip if no pivot config
+
         # Aggregate data
         agg_df = (
             dim_df.group_by(pivot_config["index"] + [dim_config["name"]])
             .agg(pl.len().alias(pivot_config["values"]))
             .sort(pivot_config["index"])  # Sort by time
         )
-        
+
         # Pivot the data
         result_df = agg_df.pivot(
             index=pivot_config["index"],
@@ -135,17 +182,17 @@ def process_kpi(df: pl.DataFrame, kpi_name: str, kpi_config: Dict[str, Any], con
             values=pivot_config["values"],
             aggregate_function=pivot_config["aggregate_function"]
         )
-        
+
         # Add total column
         value_columns = [col for col in result_df.columns if col not in pivot_config["index"]]
         result_df = result_df.with_columns(
             Total=pl.sum_horizontal(value_columns)
         )
-        
+
         # Rename columns if specified
         if "rename_columns" in pivot_config:
             result_df = result_df.rename(pivot_config["rename_columns"])
-        
+
         # Reorder columns if specified
         if "final_column_order" in pivot_config:
             # Get the actual columns that exist in the DataFrame
@@ -153,9 +200,9 @@ def process_kpi(df: pl.DataFrame, kpi_name: str, kpi_config: Dict[str, Any], con
             # Add any remaining value columns that weren't in the final_column_order
             remaining_columns = [col for col in value_columns if col not in existing_columns]
             result_df = result_df.select(existing_columns + remaining_columns)
-        
+
         results[dim_name] = result_df
-    
+
     return results
 
 def main():

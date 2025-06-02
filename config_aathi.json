@@ -450,27 +450,31 @@
                 }
             }
         },
-        "landing_page": {
-            "description": "Number of landing page views (first page_viewed event per session)",
+        "landing_page_viewers": {
+            "description": "Number of unique landing page viewers",
             "type": "cumulative",
             "accent": "positive",
             "calculation": {
                 "method": "unique_count",
                 "filter": {
-                    "and": [
-                        {
-                            "column": "event_name",
-                            "operator": "==",
-                            "value": "page_viewed"
-                        },
-                        {
-                            "column": "event_timestamp",
-                            "operator": "==",
-                            "value": "min(event_timestamp) by event_details_clientid"
-                        }
-                    ]
+                    "column": "event_name",
+                    "operator": "==",
+                    "value": "page_viewed"
                 },
-                "column": "event_details_clientid"
+                "column": "event_details_clientid",
+                "first_occurrence": {
+                    "method": "group_by_first",
+                    "group_by": "session_id",
+                    "aggregations": [
+                        { "column": "event_timestamp", "agg": "min", "alias": "session_start" },
+                        { "column": "event_name", "agg": "first" },
+                        { "column": "shop", "agg": "first" },
+                        { "column": "user_agent", "agg": "first" },
+                        { "column": "utm_source", "agg": "first" },
+                        { "column": "utm_medium", "agg": "first" }
+                    ],
+                    "drop_nulls": true
+                }
             },
             "dimensions": {
                 "location": {
@@ -498,39 +502,92 @@
                         {
                             "type": "when_then",
                             "conditions": [
-                                {
-                                    "condition": "str.contains('iPhone|iPad|iOS')",
-                                    "value": "iOS"
-                                },
-                                {
-                                    "condition": "str.contains('Android')",
-                                    "value": "Android"
-                                },
-                                {
-                                    "condition": "str.contains('Windows')",
-                                    "value": "Windows"
-                                },
-                                {
-                                    "condition": "str.contains('Mac OS|Macintosh')",
-                                    "value": "macOS"
-                                },
-                                {
-                                    "condition": "str.contains('Linux Mint')",
-                                    "value": "Linux"
-                                },
-                                {
-                                    "condition": "str.contains('Linux')",
-                                    "value": "Linux"
-                                },
-                                {
-                                    "condition": "str.contains('Tizen|Ubuntu|OpenBSD|FreeBSD|BlackBerry')",
-                                    "value": "Other"
-                                }
+                                { "condition": "str.contains('iPhone|iPad|iOS')", "value": "iOS" },
+                                { "condition": "str.contains('Android')", "value": "Android" },
+                                { "condition": "str.contains('Windows')", "value": "Windows" },
+                                { "condition": "str.contains('Mac OS|Macintosh')", "value": "macOS" },
+                                { "condition": "str.contains('Linux Mint')", "value": "Linux" },
+                                { "condition": "str.contains('Linux')", "value": "Linux" },
+                                { "condition": "str.contains('Tizen|Ubuntu|OpenBSD|FreeBSD|BlackBerry')", "value": "Other" }
                             ],
                             "default": "Other"
                         }
                     ],
                     "mapping": "device_mapping"
+                },
+                "utm_source": {
+                    "display_name": "UTM Source",
+                    "name": "utm_source",
+                    "source_column": "utm_source",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "str.contains('google|bing')",
+                                    "value": "Search"
+                                },
+                                {
+                                    "condition": "str.contains('facebook|fbig')",
+                                    "value": "Facebook"
+                                },
+                                {
+                                    "condition": "str.contains('instagram|IG')",
+                                    "value": "Instagram"
+                                },
+                                {
+                                    "condition": "str.contains('tiktok|TikTok')",
+                                    "value": "TikTok"
+                                },
+                                {
+                                    "condition": "str.contains('klaviyo|email|hs_email')",
+                                    "value": "Email"
+                                },
+                                {
+                                    "condition": "str.contains('shopify|store-directory')",
+                                    "value": "Shopify"
+                                },
+                                {
+                                    "condition": "str.contains('rakuten|awin|affiliate')",
+                                    "value": "Affiliates"
+                                }
+                            ],
+                            "default": "Other"
+                        }
+                    ]
+                },
+                "utm_medium": {
+                    "display_name": "UTM Medium",
+                    "name": "utm_medium",
+                    "source_column": "utm_medium",
+                    "transformations": [
+                        {
+                            "type": "when_then",
+                            "conditions": [
+                                {
+                                    "condition": "str.contains('cpc|paid')",
+                                    "value": "Paid Search"
+                                },
+                                {
+                                    "condition": "str.contains('email|sms')",
+                                    "value": "Email"
+                                },
+                                {
+                                    "condition": "str.contains('social|instagram|facebook|tiktok')",
+                                    "value": "Social"
+                                },
+                                {
+                                    "condition": "str.contains('affiliate|referral')",
+                                    "value": "Affiliate"
+                                },
+                                {
+                                    "condition": "str.contains('youtube')",
+                                    "value": "YouTube"
+                                }
+                            ],
+                            "default": "Other"
+                        }
+                    ]
                 }
             }
         }
@@ -567,6 +624,28 @@
             },
             "total_columns": [],
             "final_column_order": ["time_hour", "time", "Total"]
+        },
+        "utm_source": {
+            "index": ["time_truncated", "time_hour"],
+            "columns": "utm_source",
+            "values": "count",
+            "aggregate_function": "sum",
+            "rename_columns": {
+                "time_truncated": "time"
+            },
+            "total_columns": ["Search", "Facebook", "Instagram", "TikTok", "Email", "Shopify", "Affiliates"],
+            "final_column_order": ["time_hour", "time", "Search", "Facebook", "Instagram", "TikTok", "Email", "Shopify", "Affiliates", "Other", "Total"]
+        },
+        "utm_medium": {
+            "index": ["time_truncated", "time_hour"],
+            "columns": "utm_medium",
+            "values": "count",
+            "aggregate_function": "sum",
+            "rename_columns": {
+                "time_truncated": "time"
+            },
+            "total_columns": ["Paid Search", "Email", "Social", "Affiliate", "YouTube"],
+            "final_column_order": ["time_hour", "time", "Paid Search", "Email", "Social", "Affiliate", "YouTube", "Other", "Total"]
         }
     },
     "common_configs": {
