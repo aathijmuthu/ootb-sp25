@@ -98,11 +98,19 @@ Categorized anomaly patterns with:
 - Contributing factors
 
 ## Dependencies
-- Python 3.x
+- Python 
 - pandas & polars (for data manipulation)
 - prophet (for anomaly detection)
 - plotly (for visualization)
 - scikit-learn (for dimensional analysis)
+
+## Installation
+### Prerequisites
+Ensure Python is installed, then install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Usage
 ```python
