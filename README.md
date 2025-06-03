@@ -75,6 +75,44 @@ The system analyzes anomalies across three levels:
    - **C**: No clear dimensional contributors
    - **D**: Single-metric or single-hour anomalies
 
+## Required Input Data
+The analysis requires a Parquet file (`al_updated_testdata.parquet`) with the following columns:
+- `event_type`: Type of event recorded
+- `event_name`: Specific action/event name
+- `event_timestamp`: When the event occurred
+- `shop`: Shop identifier
+- `page_url`: URL where event occurred
+- `user_agent`: Browser/device information
+- `session_id`: Unique session identifier
+- `device_type`: Device category
+- `utm_source`: Traffic source
+- `utm_medium`: Marketing medium
+- `geography`: Geographic region
+
+## Running the Analysis
+
+1. Ensure your parquet file is in the project directory
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Run the analysis:
+   ```python
+   import polars as pl
+   import pandas as pd
+   from prophet import Prophet
+   import plotly.express as px
+   
+   # Load dataset
+   df = pl.read_parquet("al_updated_testdata.parquet")
+   
+   # Generate reports
+   anomaly_report = generate_anomaly_report(df)
+   group_report = generate_anomaly_group_report(anomaly_report)
+   scenarios = analyze_anomaly_scenarios(group_report, anomaly_report)
+   ```
+
 ## Output Files
 
 ### 1. `anomaly_report.csv`
@@ -96,32 +134,6 @@ Categorized anomaly patterns with:
 - Dimensional patterns
 - Metric relationships
 - Contributing factors
-
-## Dependencies
-- Python 
-- pandas & polars (for data manipulation)
-- prophet (for anomaly detection)
-- plotly (for visualization)
-- scikit-learn (for dimensional analysis)
-
-## Installation
-### Prerequisites
-Ensure Python is installed, then install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Usage
-```python
-# Load and process the parquet dataset
-df = pl.read_parquet("al_updated_testdata.parquet")
-
-# Generate visualization and reports
-anomaly_report = generate_anomaly_report(df)
-group_report = generate_anomaly_group_report(anomaly_report)
-scenarios = analyze_anomaly_scenarios(group_report, anomaly_report)
-```
 
 ## Note
 This analysis is specifically designed for nested dimensional data where:
