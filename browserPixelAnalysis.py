@@ -3042,3 +3042,208 @@ for _, row in historical_analysis.iterrows():
 # %%
 historical_analysis
 # %%
+
+# %%
+
+def classify_anomaly_groups(scenarios, historical_analysis):
+    """
+    Classify anomaly groups as True Positives (TP) or False Positives (FP) based on
+    scenario analysis and historical data.
+    
+    Args:
+        scenarios (dict): Dictionary containing categorized anomaly scenarios
+        historical_analysis (pd.DataFrame): Historical analysis results
+        
+    Returns:
+        dict: Classification results with confidence scores and reasoning
+    """
+    classifications = {}
+    
+    def calculate_confidence_score(scenario_type, historical_data, metrics_count, duration_hours):
+        """Calculate confidence score for TP classification."""
+        score = 0
+        reasoning = []
+        
+        # Base score from scenario type
+        scenario_scores = {
+            'A': 0.8,  # Multiple metrics with shared contributors
+            'B': 0.6,  # Multiple metrics with different contributors
+            'C': 0.4,  # Multiple metrics without contributors
+            'D': 0.3   # Single metric or single hour
+        }
+        base_score = scenario_scores[scenario_type]
+        score += base_score
+        reasoning.append(f"Base score (Scenario {scenario_type}): {base_score:.2f}")
+        
+        # Historical consistency score (40% weight)
+        historical_score = 0
+        if historical_data is not None:
+            significant_changes = 0
+            total_comparisons = 0
+            
+            metrics_analysis = historical_data.get('metrics_analysis', [])
+            if isinstance(metrics_analysis, str):
+                import ast
+                metrics_analysis = ast.literal_eval(metrics_analysis)
+            
+            for metric in metrics_analysis:
+                top_level = metric.get('top_level', {})
+                
+                # Check previous day comparison
+                if top_level.get('vs_prev_day') == "Significant":
+                    significant_changes += 1
+                total_comparisons += 1
+                
+                # Check previous week comparison
+                if top_level.get('vs_prev_week') == "Significant":
+                    significant_changes += 1
+                total_comparisons += 1
+            
+            if total_comparisons > 0:
+                historical_score = significant_changes / total_comparisons
+                historical_contribution = historical_score * 0.4  # Increased weight to 40%
+                score += historical_contribution
+                reasoning.append(f"Historical consistency: {historical_score:.2f} (contributes {historical_contribution:.2f})")
+        
+        # Metric count bonus (20% weight)
+        metric_bonus = min(metrics_count / 5, 1) * 0.2
+        score += metric_bonus
+        reasoning.append(f"Metric count bonus: {metric_bonus:.2f}")
+        
+        # Duration bonus (20% weight)
+        duration_bonus = min(duration_hours / 24, 1) * 0.2
+        score += duration_bonus
+        reasoning.append(f"Duration bonus: {duration_bonus:.2f}")
+        
+        # Add total score to reasoning
+        reasoning.append(f"Total confidence score: {score:.2f}")
+        
+        return score, reasoning
+    
+    # Process each scenario type
+    for scenario_type, cases in scenarios.items():
+        for case in cases:
+            start_hour = pd.Timestamp(case['start_hour'])
+            end_hour = pd.Timestamp(case['end_hour'])
+            duration_hours = (end_hour - start_hour).total_seconds() / 3600
+            
+            # Find matching historical analysis
+            historical_data = None
+            for _, row in historical_analysis.iterrows():
+                if isinstance(row['anomaly_period'], str) and row['anomaly_period'].startswith(str(start_hour)):
+                    historical_data = row.to_dict()
+                    break
+            
+            # Calculate confidence score
+            confidence_score, reasoning = calculate_confidence_score(
+                scenario_type,
+                historical_data,
+                len(case['metrics']),
+                duration_hours
+            )
+            
+            # Classify as TP if confidence score >= 0.5 (changed from > 0.5)
+            is_tp = confidence_score >= 0.5
+            
+            classifications[f"{start_hour}_{end_hour}"] = {
+                'classification': 'TP' if is_tp else 'FP',
+                'confidence_score': confidence_score,
+                'scenario_type': scenario_type,
+                'metrics': case['metrics'],
+                'duration_hours': duration_hours,
+                'reasoning': reasoning
+            }
+    
+    return classifications
+
+# Generate classifications
+classifications = classify_anomaly_groups(scenarios, historical_analysis)
+
+# Print classification results
+print("\nAnomaly Group Classifications")
+print("============================")
+for period, result in classifications.items():
+    print(f"\nPeriod: {period}")
+    print(f"Classification: {result['classification']} (Confidence: {result['confidence_score']:.2f})")
+    print(f"Scenario Type: {result['scenario_type']}")
+    print(f"Metrics: {', '.join(result['metrics'])}")
+    print(f"Duration: {result['duration_hours']:.1f} hours")
+    print("Reasoning:")
+    for reason in result['reasoning']:
+        print(f"  - {reason}")
+    print("-" * 50)
+
+# Save classifications to JSON
+with open('anomaly_classifications.json', 'w') as f:
+    json.dump(convert_to_json_serializable(classifications), f, indent=2)
+
+print("\nClassifications have been saved to 'anomaly_classifications.json'")
+
+# %%
+
+def summarize_classifications(classifications):
+    """
+    Summarize classification results with key statistics.
+    
+    Args:
+        classifications (dict): Dictionary of classification results
+        
+    Returns:
+        dict: Summary statistics
+    """
+    # Count TP and FP
+    tp_count = sum(1 for result in classifications.values() if result['classification'] == 'TP')
+    fp_count = sum(1 for result in classifications.values() if result['classification'] == 'FP')
+    total = tp_count + fp_count
+    
+    # Calculate accuracy (assuming all classifications are correct)
+    accuracy = tp_count / total if total > 0 else 0
+    
+    # Calculate average confidence scores
+    tp_avg_confidence = np.mean([result['confidence_score'] for result in classifications.values() 
+                               if result['classification'] == 'TP']) if tp_count > 0 else 0
+    fp_avg_confidence = np.mean([result['confidence_score'] for result in classifications.values() 
+                               if result['classification'] == 'FP']) if fp_count > 0 else 0
+    
+    # Count by scenario type
+    scenario_counts = {}
+    for result in classifications.values():
+        scenario = result['scenario_type']
+        if scenario not in scenario_counts:
+            scenario_counts[scenario] = {'TP': 0, 'FP': 0}
+        scenario_counts[scenario][result['classification']] += 1
+    
+    return {
+        'total_anomalies': total,
+        'tp_count': tp_count,
+        'fp_count': fp_count,
+        'accuracy': accuracy,
+        'tp_avg_confidence': tp_avg_confidence,
+        'fp_avg_confidence': fp_avg_confidence,
+        'scenario_breakdown': scenario_counts
+    }
+
+# Generate classifications
+classifications = classify_anomaly_groups(scenarios, historical_analysis)
+
+# Get summary statistics
+summary = summarize_classifications(classifications)
+
+# Print summary results
+print("\nClassification Summary")
+print("====================")
+print(f"Total Anomalies: {summary['total_anomalies']}")
+print(f"True Positives: {summary['tp_count']} (avg confidence: {summary['tp_avg_confidence']:.2f})")
+print(f"False Positives: {summary['fp_count']} (avg confidence: {summary['fp_avg_confidence']:.2f})")
+print(f"Accuracy: {summary['accuracy']:.1%}")
+print("\nScenario Breakdown:")
+for scenario, counts in summary['scenario_breakdown'].items():
+    print(f"Scenario {scenario}: {counts['TP']} TP, {counts['FP']} FP")
+
+# Save classifications to JSON
+with open('anomaly_classifications.json', 'w') as f:
+    json.dump(convert_to_json_serializable(classifications), f, indent=2)
+
+print("\nClassifications have been saved to 'anomaly_classifications.json'")
+
+# %%
